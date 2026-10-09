@@ -8,6 +8,57 @@ import {
   Settings,
   Users,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Separator } from "@/components/ui/separator";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import {
   createAppointment,
   getAppointments,
@@ -16,9 +67,19 @@ import {
   type Appointment,
   type Patient,
 } from "./api";
-import "./App.css";
 
 type Page = "Dashboard" | "Patients" | "Appointments" | "Settings";
+
+function StatusBadge({ status }: { status: string }) {
+  const variant =
+    status.toLowerCase() === "scheduled"
+      ? "secondary"
+      : status.toLowerCase() === "completed"
+        ? "default"
+        : "outline";
+
+  return <Badge variant={variant}>{status}</Badge>;
+}
 
 function App() {
   const [email, setEmail] = useState("admin@cityhospital.com");
@@ -26,12 +87,11 @@ function App() {
   const [message, setMessage] = useState("");
   const [loginLoading, setLoginLoading] = useState(false);
   const [token, setToken] = useState(
-    () => sessionStorage.getItem("accessToken") ?? ""
+    () => sessionStorage.getItem("accessToken") ?? "",
   );
   const [page, setPage] = useState<Page>("Dashboard");
   const [sidebarOpen, setSidebarOpen] = useState(true);
 
-  // Patients
   const [patients, setPatients] = useState<Patient[]>([]);
   const [patientSearch, setPatientSearch] = useState("");
   const [patientPage, setPatientPage] = useState(1);
@@ -41,7 +101,6 @@ function App() {
   const [patientError, setPatientError] = useState("");
   const [patientRetry, setPatientRetry] = useState(0);
 
-  // Appointments
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [appointmentStatus, setAppointmentStatus] = useState("");
   const [appointmentLoading, setAppointmentLoading] = useState(false);
@@ -51,15 +110,14 @@ function App() {
   const [appointmentTotalPages, setAppointmentTotalPages] = useState(0);
   const [appointmentRetry, setAppointmentRetry] = useState(0);
 
-  // Create appointment form
   const [appointmentPatients, setAppointmentPatients] = useState<Patient[]>([]);
   const [newPatientId, setNewPatientId] = useState("");
   const [newScheduledAt, setNewScheduledAt] = useState("");
   const [newAppointmentReason, setNewAppointmentReason] = useState("");
   const [creatingAppointment, setCreatingAppointment] = useState(false);
+  const [appointmentDialogOpen, setAppointmentDialogOpen] = useState(false);
   const [createAppointmentMessage, setCreateAppointmentMessage] = useState("");
 
-  // Load patients for the directory and dashboard count.
   useEffect(() => {
     if (!token || (page !== "Patients" && page !== "Dashboard")) return;
 
@@ -68,14 +126,12 @@ function App() {
     async function loadPatients() {
       setPatientLoading(true);
       setPatientError("");
-
       try {
         const result = await getPatients(
           page === "Dashboard" ? "" : patientSearch,
           page === "Dashboard" ? 1 : patientPage,
-          10
+          10,
         );
-
         if (cancelled) return;
 
         if (page === "Dashboard") {
@@ -88,7 +144,7 @@ function App() {
       } catch (error) {
         if (!cancelled) {
           setPatientError(
-            error instanceof Error ? error.message : "Unable to load patients."
+            error instanceof Error ? error.message : "Unable to load patients.",
           );
         }
       } finally {
@@ -97,13 +153,11 @@ function App() {
     }
 
     void loadPatients();
-
     return () => {
       cancelled = true;
     };
   }, [token, page, patientSearch, patientPage, patientRetry]);
 
-  // Load appointments for the appointments page and dashboard count.
   useEffect(() => {
     if (!token || (page !== "Appointments" && page !== "Dashboard")) return;
 
@@ -112,16 +166,13 @@ function App() {
     async function loadAppointments() {
       setAppointmentLoading(true);
       setAppointmentError("");
-
       try {
         const result = await getAppointments(
           page === "Dashboard" ? "" : appointmentStatus,
           page === "Dashboard" ? 1 : appointmentPage,
-          10
+          10,
         );
-
         if (cancelled) return;
-
         setAppointments(result.items);
         setAppointmentTotal(result.totalCount);
         setAppointmentTotalPages(result.totalPages);
@@ -130,7 +181,7 @@ function App() {
           setAppointmentError(
             error instanceof Error
               ? error.message
-              : "Unable to load appointments."
+              : "Unable to load appointments.",
           );
         }
       } finally {
@@ -139,13 +190,11 @@ function App() {
     }
 
     void loadAppointments();
-
     return () => {
       cancelled = true;
     };
   }, [token, page, appointmentStatus, appointmentPage, appointmentRetry]);
 
-  // Load patient choices for the create-appointment form.
   useEffect(() => {
     if (!token || page !== "Appointments") return;
 
@@ -158,14 +207,13 @@ function App() {
       } catch {
         if (!cancelled) {
           setCreateAppointmentMessage(
-            "Unable to load patients for the appointment form."
+            "Unable to load patients for the appointment form.",
           );
         }
       }
     }
 
     void loadAppointmentPatients();
-
     return () => {
       cancelled = true;
     };
@@ -179,11 +227,9 @@ function App() {
     try {
       const result = await login(email, password);
       const accessToken = result.accessToken ?? result.token;
-
       if (!accessToken) {
         throw new Error("Login response did not contain a token.");
       }
-
       sessionStorage.setItem("accessToken", accessToken);
       setToken(accessToken);
     } catch (error) {
@@ -202,10 +248,10 @@ function App() {
       await createAppointment(
         newPatientId,
         newScheduledAt,
-        newAppointmentReason
+        newAppointmentReason,
       );
-
       setCreateAppointmentMessage("Appointment created successfully.");
+      setAppointmentDialogOpen(false);
       setNewPatientId("");
       setNewScheduledAt("");
       setNewAppointmentReason("");
@@ -213,7 +259,9 @@ function App() {
       setAppointmentRetry((current) => current + 1);
     } catch (error) {
       setCreateAppointmentMessage(
-        error instanceof Error ? error.message : "Unable to create appointment."
+        error instanceof Error
+          ? error.message
+          : "Unable to create appointment.",
       );
     } finally {
       setCreatingAppointment(false);
@@ -230,38 +278,53 @@ function App() {
 
   if (!token) {
     return (
-      <main className="login-page">
-        <form className="login-card" onSubmit={handleLogin}>
-          <div className="brand-icon">
-            <Activity size={28} />
-          </div>
-          <h1>City Hospital</h1>
-          <p>Hospital Management System</p>
-
-          <label htmlFor="email">Email</label>
-          <input
-            id="email"
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            required
-          />
-
-          <label htmlFor="password">Password</label>
-          <input
-            id="password"
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            required
-          />
-
-          <button type="submit" disabled={loginLoading}>
-            {loginLoading ? "Signing in..." : "Sign in"}
-          </button>
-
-          {message && <p role="alert">{message}</p>}
-        </form>
+      <main className="flex min-h-screen items-center justify-center bg-muted/40 p-4">
+        <Card className="w-full max-w-md">
+          <CardHeader className="items-center text-center">
+            <div className="mb-2 flex size-14 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+              <Activity size={28} />
+            </div>
+            <CardTitle className="text-2xl">City Hospital</CardTitle>
+            <CardDescription>Hospital Management System</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleLogin} className="space-y-5">
+              <div className="space-y-2">
+                <Label htmlFor="email">Email</Label>
+                <Input
+                  id="email"
+                  type="email"
+                  placeholder="admin@cityhospital.com"
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  required
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="password">Password</Label>
+                <Input
+                  id="password"
+                  type="password"
+                  value={password}
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                />
+              </div>
+              {message && (
+                <p className="text-sm text-destructive" role="alert">
+                  {message}
+                </p>
+              )}
+              <Button
+                type="submit"
+                className="w-full"
+                disabled={loginLoading}
+              >
+                {loginLoading ? "Signing in..." : "Sign in"}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
       </main>
     );
   }
@@ -274,139 +337,239 @@ function App() {
   ];
 
   return (
-    <div className="app-shell">
-      <aside className={`sidebar ${sidebarOpen ? "" : "sidebar-closed"}`}>
-        <div className="sidebar-brand">
-          <Activity size={27} />
-          {sidebarOpen && <span>City Hospital</span>}
+    <div className="flex min-h-screen bg-background text-foreground">
+      <aside
+        className={`flex shrink-0 flex-col border-r bg-card p-3 transition-all ${
+          sidebarOpen ? "w-64" : "w-20"
+        }`}
+      >
+        <div className="flex h-14 items-center gap-3 px-2">
+          <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+            <Activity size={24} />
+          </div>
+          {sidebarOpen && <span className="font-semibold">City Hospital</span>}
         </div>
-
-        <p className="nav-heading">{sidebarOpen ? "WORKSPACE" : ""}</p>
-
-        <nav>
+        <Separator className="my-3" />
+        {sidebarOpen && (
+          <p className="px-3 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Workspace
+          </p>
+        )}
+        <nav className="flex flex-1 flex-col gap-2">
           {navigation.map(({ name, icon: Icon }) => (
-            <button
-              key={name}
-              className={`nav-item ${page === name ? "active" : ""}`}
-              onClick={() => setPage(name)}
-              title={name}
-              type="button"
-            >
-              <Icon size={20} />
-              {sidebarOpen && <span>{name}</span>}
-            </button>
+            <Tooltip key={name}>
+              <TooltipTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant={page === name ? "secondary" : "ghost"}
+                    className={`w-full justify-start ${
+                      sidebarOpen ? "" : "justify-center px-0"
+                    }`}
+                    onClick={() => setPage(name)}
+                    aria-label={name}
+                  >
+                    <Icon size={18} />
+                    {sidebarOpen && <span>{name}</span>}
+                  </Button>
+                }
+              />
+              {!sidebarOpen && <TooltipContent side="right">{name}</TooltipContent>}
+            </Tooltip>
           ))}
         </nav>
-
-        <button className="nav-item logout" onClick={handleLogout} type="button">
-          <LogOut size={20} />
+        <Separator className="my-3" />
+        <Button
+          type="button"
+          variant="ghost"
+          className={`justify-start text-destructive hover:text-destructive ${
+            sidebarOpen ? "" : "justify-center px-0"
+          }`}
+          onClick={handleLogout}
+          title="Sign out"
+        >
+          <LogOut size={18} />
           {sidebarOpen && <span>Sign out</span>}
-        </button>
+        </Button>
       </aside>
 
-      <main className="main-content">
-        <header className="topbar">
-          <button
-            className="icon-button"
-            onClick={() => setSidebarOpen((open) => !open)}
-            aria-label="Toggle sidebar"
-            type="button"
-          >
-            <Menu size={21} />
-          </button>
-          <div className="topbar-right">
-            <span className="status-dot" />
-            <span>Administrator</span>
+      <main className="min-w-0 flex-1">
+        <header className="flex h-16 items-center justify-between border-b bg-card px-4 sm:px-6">
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => setSidebarOpen((open) => !open)}
+                  aria-label="Toggle sidebar"
+                >
+                  <Menu size={20} />
+                </Button>
+              }
+            />
+            <TooltipContent>Toggle sidebar</TooltipContent>
+          </Tooltip>
+          <div className="flex items-center gap-3">
+            <Badge variant="secondary" className="hidden sm:inline-flex">Online</Badge>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button variant="ghost" className="flex items-center gap-3 px-2">
+                    <Avatar>
+                      <AvatarFallback>AD</AvatarFallback>
+                    </Avatar>
+                    <span className="hidden text-left sm:block">
+                      <span className="block text-sm font-medium">Administrator</span>
+                      <span className="block text-xs text-muted-foreground">Hospital Admin</span>
+                    </span>
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuLabel>Administrator</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleLogout} className="text-destructive focus:text-destructive">
+                  <LogOut size={16} /> Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
         </header>
 
-        <section className="page-content">
-          <div className="page-heading">
+        <section className="space-y-6 p-4 sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="eyebrow">CITY HOSPITAL / WORKSPACE</p>
-              <h1>{page}</h1>
-              <p className="subtitle">
+              <p className="text-sm text-muted-foreground">
+                City Hospital / Workspace
+              </p>
+              <h1 className="text-3xl font-bold tracking-tight">{page}</h1>
+              <p className="mt-1 text-sm text-muted-foreground">
                 {page === "Dashboard"
                   ? "Here's an overview of your hospital."
                   : `Manage your hospital ${page.toLowerCase()}.`}
               </p>
             </div>
-            <span className="today-badge">Hospital Admin</span>
+            <Badge variant="outline">Hospital Admin</Badge>
           </div>
 
           {page === "Dashboard" ? (
-            <>
-              <div className="welcome-card">
-                <div>
-                  <p className="welcome-label">HOSPITAL OVERVIEW</p>
-                  <h2>Welcome back!</h2>
-                  <p>Manage patients and appointments from one place.</p>
-                </div>
-                <Activity size={54} />
-              </div>
+            <div className="space-y-6">
+              <Card className="overflow-hidden">
+                <CardContent className="flex items-center justify-between gap-4 p-6">
+                  <div>
+                    <p className="text-sm font-medium text-muted-foreground">
+                      HOSPITAL OVERVIEW
+                    </p>
+                    <h2 className="mt-2 text-2xl font-semibold">
+                      Welcome back!
+                    </h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Manage patients and appointments from one place.
+                    </p>
+                  </div>
+                  <Activity className="hidden size-12 text-primary sm:block" />
+                </CardContent>
+              </Card>
 
-              <div className="stats-grid">
-                <article className="stat-card">
-                  <div className="stat-icon blue"><Users /></div>
-                  <p>Total Patients</p>
-                  <h2>{patientTotal}</h2>
-                  <span>Registered patients</span>
-                </article>
-
-                <article className="stat-card">
-                  <div className="stat-icon green"><CalendarDays /></div>
-                  <p>Appointments</p>
-                  <h2>{appointmentTotal}</h2>
-                  <span>Appointments loaded from the API</span>
-                </article>
-
-                <article className="stat-card">
-                  <div className="stat-icon purple"><Activity /></div>
-                  <p>System Status</p>
-                  <h2>Online</h2>
-                  <span>Dashboard is running</span>
-                </article>
+              <div className="grid gap-4 md:grid-cols-3">
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">
+                      Total Patients
+                    </CardTitle>
+                    <Users className="size-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-3xl font-bold">{patientTotal}</div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Registered patients
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">
+                      Appointments
+                    </CardTitle>
+                    <CalendarDays className="size-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-3xl font-bold">{appointmentTotal}</div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Loaded from the API
+                    </p>
+                  </CardContent>
+                </Card>
+                <Card>
+                  <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                    <CardTitle className="text-sm font-medium">
+                      System Status
+                    </CardTitle>
+                    <Activity className="size-4 text-muted-foreground" />
+                  </CardHeader>
+                  <CardContent>
+                    <div className="text-3xl font-bold">Online</div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      Dashboard is running
+                    </p>
+                  </CardContent>
+                </Card>
               </div>
 
               {(patientError || appointmentError) && (
-                <section className="panel">
-                  <p role="alert">{patientError || appointmentError}</p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPatientRetry((current) => current + 1);
-                      setAppointmentRetry((current) => current + 1);
-                    }}
-                  >
-                    Retry dashboard data
-                  </button>
-                </section>
+                <Card>
+                  <CardContent className="flex flex-wrap items-center justify-between gap-3 p-4">
+                    <p className="text-sm text-destructive" role="alert">
+                      {patientError || appointmentError}
+                    </p>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setPatientRetry((current) => current + 1);
+                        setAppointmentRetry((current) => current + 1);
+                      }}
+                    >
+                      Retry dashboard data
+                    </Button>
+                  </CardContent>
+                </Card>
               )}
 
-              <section className="panel">
-                <h3>Quick actions</h3>
-                <p className="subtitle">Choose a section to continue working.</p>
-                <div className="quick-actions">
-                  <button onClick={() => setPage("Patients")} type="button">
-                    <Users size={19} /> View Patients
-                  </button>
-                  <button onClick={() => setPage("Appointments")} type="button">
-                    <CalendarDays size={19} /> View Appointments
-                  </button>
-                </div>
-              </section>
-            </>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Quick actions</CardTitle>
+                  <CardDescription>
+                    Choose a section to continue working.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap gap-3">
+                  <Button onClick={() => setPage("Patients")}>
+                    <Users size={18} />
+                    View Patients
+                  </Button>
+                  <Button
+                    variant="outline"
+                    onClick={() => setPage("Appointments")}
+                  >
+                    <CalendarDays size={18} />
+                    View Appointments
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
           ) : page === "Patients" ? (
-            <section className="panel patients-panel">
-              <div className="patients-toolbar">
+            <Card>
+              <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                 <div>
-                  <h2>Patient Directory</h2>
-                  <p className="subtitle">
-                    {patientTotal} patient{patientTotal === 1 ? "" : "s"} registered
-                  </p>
+                  <CardTitle>Patient Directory</CardTitle>
+                  <CardDescription>
+                    {patientTotal} patient{patientTotal === 1 ? "" : "s"}{" "}
+                    registered
+                  </CardDescription>
                 </div>
-                <input
-                  className="patient-search"
+                <Input
+                  className="w-full sm:max-w-xs"
                   type="search"
                   placeholder="Search name or phone..."
                   value={patientSearch}
@@ -414,227 +577,324 @@ function App() {
                     setPatientSearch(event.target.value);
                     setPatientPage(1);
                   }}
+                  aria-label="Search patients"
                 />
-              </div>
-
-              {patientLoading ? (
-                <p className="patients-message">Loading patients...</p>
-              ) : patientError ? (
-                <div className="patients-error" role="alert">
-                  <p>{patientError}</p>
-                  <button
-                    type="button"
-                    onClick={() => setPatientRetry((current) => current + 1)}
-                  >
-                    Retry
-                  </button>
-                </div>
-              ) : patients.length === 0 ? (
-                <p className="patients-message">No patients found.</p>
-              ) : (
-                <div className="table-scroll">
-                  <table className="patients-table">
-                    <thead>
-                      <tr>
-                        <th>Patient</th>
-                        <th>Phone</th>
-                        <th>Email</th>
-                        <th>Date of Birth</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {patients.map((patient) => (
-                        <tr key={patient.id}>
-                          <td>
-                            <div className="patient-name">
-                              {patient.firstName} {patient.lastName}
-                            </div>
-                            <div className="patient-id">
-                              ID: {patient.id.slice(0, 8)}
-                            </div>
-                          </td>
-                          <td>{patient.phone || "—"}</td>
-                          <td>{patient.email || "—"}</td>
-                          <td>{patient.dateOfBirth}</td>
-                          <td>
-                            <span className={`patient-status ${patient.status.toLowerCase()}`}>
-                              {patient.status}
-                            </span>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              <div className="pagination">
-                <span>Page {patientPage} of {Math.max(patientTotalPages, 1)}</span>
-                <div>
-                  <button
-                    type="button"
-                    disabled={patientPage <= 1 || patientLoading}
-                    onClick={() => setPatientPage((current) => current - 1)}
-                  >
-                    Previous
-                  </button>
-                  <button
-                    type="button"
-                    disabled={patientPage >= patientTotalPages || patientLoading}
-                    onClick={() => setPatientPage((current) => current + 1)}
-                  >
-                    Next
-                  </button>
-                </div>
-              </div>
-            </section>
-          ) : page === "Appointments" ? (
-            <section className="panel patients-panel">
-              <div className="patients-toolbar">
-                <div>
-                  <h2>Appointments</h2>
-                  <p className="subtitle">{appointmentTotal} appointment(s) found</p>
-                </div>
-                <select
-                  value={appointmentStatus}
-                  onChange={(event) => {
-                    setAppointmentStatus(event.target.value);
-                    setAppointmentPage(1);
-                  }}
-                  aria-label="Filter appointments by status"
-                >
-                  <option value="">All statuses</option>
-                  <option value="scheduled">Scheduled</option>
-                  <option value="completed">Completed</option>
-                  <option value="cancelled">Cancelled</option>
-                </select>
-              </div>
-
-              <form className="appointment-form" onSubmit={handleCreateAppointment}>
-                <h3>Schedule an Appointment</h3>
-
-                <label htmlFor="appointment-patient">Patient</label>
-                <select
-                  id="appointment-patient"
-                  value={newPatientId}
-                  onChange={(event) => setNewPatientId(event.target.value)}
-                  required
-                >
-                  <option value="">Select a patient</option>
-                  {appointmentPatients.map((patient) => (
-                    <option key={patient.id} value={patient.id}>
-                      {patient.firstName} {patient.lastName}
-                    </option>
-                  ))}
-                </select>
-
-                <label htmlFor="appointment-date">Date and time</label>
-                <input
-                  id="appointment-date"
-                  type="datetime-local"
-                  value={newScheduledAt}
-                  onChange={(event) => setNewScheduledAt(event.target.value)}
-                  min={new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
-                    .toISOString()
-                    .slice(0, 16)}
-                  required
-                />
-
-                <label htmlFor="appointment-reason">Reason</label>
-                <input
-                  id="appointment-reason"
-                  value={newAppointmentReason}
-                  onChange={(event) => setNewAppointmentReason(event.target.value)}
-                  placeholder="Enter appointment reason"
-                  required
-                />
-
-                <button type="submit" disabled={creatingAppointment}>
-                  {creatingAppointment ? "Saving..." : "Create Appointment"}
-                </button>
-
-                {createAppointmentMessage && (
-                  <p role="status">{createAppointmentMessage}</p>
+              </CardHeader>
+              <CardContent>
+                {patientLoading ? (
+                  <div className="space-y-3 py-3" aria-label="Loading patients">
+                    {Array.from({ length: 5 }).map((_, index) => (
+                      <div key={index} className="flex items-center gap-4">
+                        <Skeleton className="h-10 w-10 rounded-full" />
+                        <div className="flex-1 space-y-2">
+                          <Skeleton className="h-4 w-1/3" />
+                          <Skeleton className="h-3 w-1/2" />
+                        </div>
+                        <Skeleton className="hidden h-4 w-24 sm:block" />
+                      </div>
+                    ))}
+                  </div>
+                ) : patientError ? (
+                  <div className="flex flex-wrap items-center justify-between gap-3 py-4">
+                    <p className="text-sm text-destructive" role="alert">
+                      {patientError}
+                    </p>
+                    <Button
+                      variant="outline"
+                      onClick={() => setPatientRetry((current) => current + 1)}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                ) : patients.length === 0 ? (
+                  <p className="py-8 text-center text-sm text-muted-foreground">
+                    No patients found.
+                  </p>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Patient</TableHead>
+                          <TableHead>Phone</TableHead>
+                          <TableHead>Email</TableHead>
+                          <TableHead>Date of Birth</TableHead>
+                          <TableHead>Status</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {patients.map((patient) => (
+                          <TableRow key={patient.id}>
+                            <TableCell>
+                              <div className="font-medium">
+                                {patient.firstName} {patient.lastName}
+                              </div>
+                              <div className="text-xs text-muted-foreground">
+                                ID: {patient.id.slice(0, 8)}
+                              </div>
+                            </TableCell>
+                            <TableCell>{patient.phone || "—"}</TableCell>
+                            <TableCell>{patient.email || "—"}</TableCell>
+                            <TableCell>{patient.dateOfBirth}</TableCell>
+                            <TableCell>
+                              <StatusBadge status={patient.status} />
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
                 )}
-              </form>
 
-              {appointmentLoading ? (
-                <p className="patients-message">Loading appointments...</p>
-              ) : appointmentError ? (
-                <div className="patients-error" role="alert">
-                  <p>{appointmentError}</p>
-                  <button
-                    type="button"
-                    onClick={() => setAppointmentRetry((current) => current + 1)}
-                  >
-                    Retry
-                  </button>
+                <Separator className="my-4" />
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <p className="text-sm text-muted-foreground">
+                    Page {patientPage} of {Math.max(patientTotalPages, 1)}
+                  </p>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      disabled={patientPage <= 1 || patientLoading}
+                      onClick={() => setPatientPage((current) => current - 1)}
+                    >
+                      Previous
+                    </Button>
+                    <Button
+                      variant="outline"
+                      disabled={
+                        patientPage >= patientTotalPages || patientLoading
+                      }
+                      onClick={() => setPatientPage((current) => current + 1)}
+                    >
+                      Next
+                    </Button>
+                  </div>
                 </div>
-              ) : appointments.length === 0 ? (
-                <p className="patients-message">No appointments found.</p>
-              ) : (
-                <div className="table-scroll">
-                  <table className="patients-table">
-                    <thead>
-                      <tr>
-                        <th>Patient ID</th>
-                        <th>Date &amp; Time</th>
-                        <th>Reason</th>
-                        <th>Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {appointments.map((appointment) => (
-                        <tr key={appointment.id}>
-                          <td title={appointment.patientId}>
-                            {appointment.patientId.slice(0, 8)}...
-                          </td>
-                          <td>{new Date(appointment.scheduledAtUtc).toLocaleString()}</td>
-                          <td>{appointment.reason}</td>
-                          <td>
-                            <span className={`patient-status ${appointment.status.toLowerCase()}`}>
-                              {appointment.status}
-                            </span>
-                          </td>
-                        </tr>
+              </CardContent>
+            </Card>
+          ) : page === "Appointments" ? (
+            <div className="space-y-6">
+              <Card>
+                <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <CardTitle>Appointments</CardTitle>
+                    <CardDescription>
+                      {appointmentTotal} appointment(s) found
+                    </CardDescription>
+                  </div>
+                  <div className="w-full sm:max-w-xs">
+                    <Label htmlFor="appointment-status" className="sr-only">
+                      Filter appointments by status
+                    </Label>
+                    <Select
+                      value={appointmentStatus || "all"}
+                      onValueChange={(value) => {
+                        setAppointmentStatus(!value || value === "all" ? "" : value);
+                        setAppointmentPage(1);
+                      }}
+                    >
+                      <SelectTrigger id="appointment-status" className="w-full">
+                        <SelectValue placeholder="Filter by status" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All statuses</SelectItem>
+                        <SelectItem value="scheduled">Scheduled</SelectItem>
+                        <SelectItem value="completed">Completed</SelectItem>
+                        <SelectItem value="cancelled">Cancelled</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  {appointmentLoading ? (
+                    <div className="space-y-3 py-3" aria-label="Loading appointments">
+                      {Array.from({ length: 4 }).map((_, index) => (
+                        <div key={index} className="grid grid-cols-4 gap-3">
+                          <Skeleton className="h-5 w-full" />
+                          <Skeleton className="h-5 w-full" />
+                          <Skeleton className="h-5 w-full" />
+                          <Skeleton className="h-5 w-2/3" />
+                        </div>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                    </div>
+                  ) : appointmentError ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 py-4">
+                      <p className="text-sm text-destructive" role="alert">
+                        {appointmentError}
+                      </p>
+                      <Button
+                        variant="outline"
+                        onClick={() =>
+                          setAppointmentRetry((current) => current + 1)
+                        }
+                      >
+                        Retry
+                      </Button>
+                    </div>
+                  ) : appointments.length === 0 ? (
+                    <p className="py-6 text-center text-sm text-muted-foreground">
+                      No appointments found.
+                    </p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>Patient ID</TableHead>
+                            <TableHead>Date &amp; Time</TableHead>
+                            <TableHead>Reason</TableHead>
+                            <TableHead>Status</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {appointments.map((appointment) => (
+                            <TableRow key={appointment.id}>
+                              <TableCell title={appointment.patientId}>
+                                {appointment.patientId.slice(0, 8)}...
+                              </TableCell>
+                              <TableCell>
+                                {new Date(
+                                  appointment.scheduledAtUtc,
+                                ).toLocaleString()}
+                              </TableCell>
+                              <TableCell>{appointment.reason}</TableCell>
+                              <TableCell>
+                                <StatusBadge status={appointment.status} />
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    </div>
+                  )}
+                  <Separator className="my-4" />
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-sm text-muted-foreground">
+                      Page {appointmentPage} of{" "}
+                      {Math.max(appointmentTotalPages, 1)}
+                    </p>
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        disabled={
+                          appointmentPage <= 1 || appointmentLoading
+                        }
+                        onClick={() =>
+                          setAppointmentPage((current) => current - 1)
+                        }
+                      >
+                        Previous
+                      </Button>
+                      <Button
+                        variant="outline"
+                        disabled={
+                          appointmentPage >= appointmentTotalPages ||
+                          appointmentLoading ||
+                          appointmentTotalPages === 0
+                        }
+                        onClick={() =>
+                          setAppointmentPage((current) => current + 1)
+                        }
+                      >
+                        Next
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
 
-              <div className="pagination">
-                <span>
-                  Page {appointmentPage} of {Math.max(appointmentTotalPages, 1)}
-                </span>
-                <div>
-                  <button
-                    type="button"
-                    disabled={appointmentPage <= 1 || appointmentLoading}
-                    onClick={() => setAppointmentPage((current) => current - 1)}
-                  >
-                    Previous
-                  </button>
-                  <button
-                    type="button"
-                    disabled={
-                      appointmentPage >= appointmentTotalPages ||
-                      appointmentLoading ||
-                      appointmentTotalPages === 0
+              <div className="space-y-2">
+                {createAppointmentMessage && !appointmentDialogOpen && (
+                  <p className="text-sm text-muted-foreground" role="status">{createAppointmentMessage}</p>
+                )}
+              <Dialog open={appointmentDialogOpen} onOpenChange={setAppointmentDialogOpen}>
+                <div className="flex justify-end">
+                  <DialogTrigger
+                    render={
+                      <Button>
+                        <CalendarDays size={18} /> Schedule appointment
+                      </Button>
                     }
-                    onClick={() => setAppointmentPage((current) => current + 1)}
-                  >
-                    Next
-                  </button>
+                  />
                 </div>
+                <DialogContent className="sm:max-w-lg">
+                  <DialogHeader>
+                    <DialogTitle>Schedule an Appointment</DialogTitle>
+                    <DialogDescription>
+                      Add a new appointment for a registered patient.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <form
+                    className="grid gap-4"
+                    onSubmit={handleCreateAppointment}
+                  >
+                    <div className="space-y-2">
+                      <Label htmlFor="appointment-patient">Patient</Label>
+                      <Select
+                        value={newPatientId}
+                        onValueChange={(value) => setNewPatientId(value ?? "")}
+                      >
+                        <SelectTrigger id="appointment-patient" className="w-full">
+                          <SelectValue placeholder="Select a patient" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {appointmentPatients.map((patient) => (
+                            <SelectItem key={patient.id} value={patient.id}>
+                              {patient.firstName} {patient.lastName}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="appointment-date">Date and time</Label>
+                      <Input
+                        id="appointment-date"
+                        type="datetime-local"
+                        value={newScheduledAt}
+                        onChange={(event) => setNewScheduledAt(event.target.value)}
+                        min={new Date(
+                          Date.now() - new Date().getTimezoneOffset() * 60000,
+                        ).toISOString().slice(0, 16)}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="appointment-reason">Reason</Label>
+                      <Textarea
+                        id="appointment-reason"
+                        value={newAppointmentReason}
+                        onChange={(event) => setNewAppointmentReason(event.target.value)}
+                        placeholder="Enter appointment reason"
+                        rows={3}
+                        required
+                      />
+                    </div>
+                    {createAppointmentMessage && (
+                      <p className="text-sm" role="status">{createAppointmentMessage}</p>
+                    )}
+                    <div className="flex justify-end gap-2">
+                      <Button type="button" variant="outline" onClick={() => setAppointmentDialogOpen(false)}>
+                        Cancel
+                      </Button>
+                      <Button type="submit" disabled={creatingAppointment || !newPatientId}>
+                        {creatingAppointment ? "Saving..." : "Create Appointment"}
+                      </Button>
+                    </div>
+                  </form>
+                </DialogContent>
+              </Dialog>
               </div>
-            </section>
+            </div>
           ) : (
-            <section className="panel">
-              <h2>Settings</h2>
-              <p className="subtitle">Hospital settings will be added later.</p>
-            </section>
+            <Card>
+              <CardHeader>
+                <CardTitle>Settings</CardTitle>
+                <CardDescription>
+                  Hospital settings will be added later.
+                </CardDescription>
+              </CardHeader>
+            </Card>
           )}
         </section>
       </main>
