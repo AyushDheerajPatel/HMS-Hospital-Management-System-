@@ -1,0 +1,22 @@
+# .NET build output
+**/bin/
+**/obj/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Frontend
+Hms.Web/node_modules/
+Hms.Web/dist/
+
+# Environment files and secrets
+.env
+.env.*
+!.env.example
+**/appsettings.Development.json
+
+# Logs and temporary files
+*.log
+*.tmp
