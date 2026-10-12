@@ -1,8 +1,5 @@
-using Hms.Domain.Users;
-
 namespace Hms.Api.Infrastructure.Auth;
 
-public interface IJwtTokenService
+public interface IJwtTokenService : Hms.Api.Features.Auth.IJwtTokenService
 {
-    string CreateToken(User user);
 }

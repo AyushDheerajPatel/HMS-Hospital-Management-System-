@@ -8,10 +8,11 @@ public static class Endpoint
             "/api/appointments",
             async (
                 Command command,
-                Handler handler) =>
+                Handler handler,
+                CancellationToken cancellationToken) =>
             {
                 var appointment =
-                    await handler.HandleAsync(command);
+                    await handler.HandleAsync(command, cancellationToken);
 
                 return Results.Created(
                     $"/api/appointments/{appointment.Id}",

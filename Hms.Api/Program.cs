@@ -1,4 +1,5 @@
 using Microsoft.IdentityModel.Tokens;
+using System.Text;
 using Hms.Api.Features.Health;
 using Hms.Api.Infrastructure.Auth;
 using Hms.Api.Infrastructure.Tenancy;
@@ -9,8 +10,10 @@ using Microsoft.AspNetCore.Identity;
 using Hms.Domain.Users;
 using Hms.Infrastructure.MongoDB;
 using CreateClinicalRecord = Hms.Api.Features.ClinicalRecords.CreateClinicalRecord;
+using ListClinicalRecords = Hms.Api.Features.ClinicalRecords.ListClinicalRecords;
 
 using CreateTenant = Hms.Api.Features.Tenants.CreateTenant;
+using RegisterTenant = Hms.Api.Features.Tenants.RegisterTenant;
 using Register = Hms.Api.Features.Auth.Register;
 using Login = Hms.Api.Features.Auth.Login;
 using CreatePatient = Hms.Api.Features.Patients.CreatePatient;
@@ -18,26 +21,51 @@ using GetPatient = Hms.Api.Features.Patients.GetPatient;
 using ListPatients = Hms.Api.Features.Patients.ListPatients;
 using CreateAppointment = Hms.Api.Features.Appointments.CreateAppointment;
 using ListAppointments = Hms.Api.Features.Appointments.ListAppointments;
+using Dashboard = Hms.Api.Features.Dashboard;
+using SyncAppointments = Hms.Api.Features.Sync.SyncAppointments;
 
 var builder = WebApplication.CreateBuilder(args);
+var jwtKey = builder.Configuration["Jwt:Key"]
+    ?? throw new InvalidOperationException("JWT signing key is not configured.");
+if (Encoding.UTF8.GetByteCount(jwtKey) < 32)
+{
+    throw new InvalidOperationException(
+        "JWT signing key must be at least 32 bytes.");
+}
+var jwtIssuer = builder.Configuration["Jwt:Issuer"]
+    ?? throw new InvalidOperationException("JWT issuer is not configured.");
+var jwtAudience = builder.Configuration["Jwt:Audience"]
+    ?? throw new InvalidOperationException("JWT audience is not configured.");
 
 builder.Services.AddScoped<CreateClinicalRecord.Handler>();
+builder.Services.AddScoped<ListClinicalRecords.Handler>();
 builder.Services.AddSingleton<MongoDbContext>();
 builder.Services.AddProblemDetails();
 builder.Services.AddScoped<Login.Handler>();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddScoped<ICurrentUser, CurrentUser>();
 builder.Services.AddScoped<IJwtTokenService, JwtTokenService>();
+builder.Services.AddScoped<Hms.Api.Features.Auth.IJwtTokenService>(
+    services => services.GetRequiredService<IJwtTokenService>());
 builder.Services.AddScoped<IPasswordHasher<User>, PasswordHasher<User>>();
 builder.Services.AddScoped<Register.Handler>();
 builder.Services.AddScoped<ITenantContext, TenantContext>();
 builder.Services.AddScoped<HealthService>();
 builder.Services.AddScoped<CreateTenant.Handler>();
+builder.Services.AddScoped<RegisterTenant.Handler>();
 builder.Services.AddScoped<CreatePatient.Handler>();
 builder.Services.AddScoped<GetPatient.Handler>();
 builder.Services.AddScoped<ListPatients.Handler>();
 builder.Services.AddScoped<CreateAppointment.Handler>();
 builder.Services.AddScoped<ListAppointments.Handler>();
+builder.Services.AddScoped<Dashboard.Handler>();
+builder.Services.AddScoped<Dashboard.DashboardStatsCache>();
+builder.Services.AddStackExchangeRedisCache(options =>
+{
+    options.Configuration =
+        builder.Configuration["Redis:Configuration"] ?? "localhost:6379";
+    options.InstanceName = "hms:";
+});
 
 
 builder.Services.AddDbContext<HmsDbContext>(options =>
@@ -57,12 +85,11 @@ builder.Services
             ValidateLifetime = true,
             ValidateIssuerSigningKey = true,
 
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidAudience = builder.Configuration["Jwt:Audience"],
+            ValidIssuer = jwtIssuer,
+            ValidAudience = jwtAudience,
 
             IssuerSigningKey = new SymmetricSecurityKey(
-                System.Text.Encoding.UTF8.GetBytes(
-                    builder.Configuration["Jwt:Key"]!))
+                Encoding.UTF8.GetBytes(jwtKey))
         };
     });
 
@@ -109,12 +136,16 @@ app.MapGet("/api/tenant-context", (
 Register.Endpoint.Map(app);
 Login.Endpoint.Map(app);
 CreateClinicalRecord.Endpoint.Map(app);
+ListClinicalRecords.Endpoint.Map(app);
 CreateTenant.Endpoint.Map(app);
+RegisterTenant.Endpoint.Map(app);
 CreatePatient.Endpoint.Map(app);
 GetPatient.Endpoint.Map(app);
 ListPatients.Endpoint.Map(app);
 CreateAppointment.Endpoint.Map(app);
 ListAppointments.Endpoint.Map(app);
+Dashboard.Endpoint.Map(app);
+SyncAppointments.Endpoint.Map(app);
 
 
 app.Run();

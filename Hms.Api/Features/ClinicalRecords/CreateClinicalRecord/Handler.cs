@@ -25,7 +25,8 @@ public sealed class Handler
 
     public async Task<ClinicalRecordDocument> HandleAsync(
         Guid patientId,
-        Command command)
+        Command command,
+        CancellationToken cancellationToken)
     {
         var tenantId = _tenantContext.TenantId;
 
@@ -59,6 +60,13 @@ public sealed class Handler
                 "Notes must be 5000 characters or fewer.");
         }
 
+        if (command.Medications is { Count: > 50 } ||
+            command.Medications?.Any(x => x is null || x.Length > 200) == true)
+        {
+            throw new ValidationException(
+                "Provide no more than 50 medications, each 200 characters or fewer.");
+        }
+
         var patientExists = await _dbContext.Patients
             .AnyAsync(x =>
                 x.Id == patientId &&
@@ -69,6 +77,8 @@ public sealed class Handler
             throw new ValidationException(
                 "Patient not found.");
         }
+
+        await _mongoDbContext.EnsureIndexesAsync(cancellationToken);
 
         var record = new ClinicalRecordDocument
         {
@@ -84,7 +94,9 @@ public sealed class Handler
         };
 
         await _mongoDbContext.ClinicalRecords
-            .InsertOneAsync(record);
+            .InsertOneAsync(
+                record,
+                cancellationToken: cancellationToken);
 
         return record;
     }

@@ -8,12 +8,8 @@ public static class Endpoint
             Command command,
             Handler handler) =>
         {
-            var token = await handler.HandleAsync(command);
-
-            return Results.Ok(new
-            {
-                accessToken = token
-            });
+            var response = await handler.HandleAsync(command);
+            return Results.Ok(response);
         });
     }
 }

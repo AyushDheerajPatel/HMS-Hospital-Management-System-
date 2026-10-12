@@ -8,9 +8,10 @@ public static class Endpoint
             "/api/patients",
             async (
                 Command command,
-                Handler handler) =>
+                Handler handler,
+                CancellationToken cancellationToken) =>
             {
-                var patient = await handler.HandleAsync(command);
+                var patient = await handler.HandleAsync(command, cancellationToken);
 
                 return Results.Created(
                     $"/api/patients/{patient.Id}",

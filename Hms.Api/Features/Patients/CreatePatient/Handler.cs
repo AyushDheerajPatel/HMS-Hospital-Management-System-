@@ -1,5 +1,6 @@
 using Hms.Api.Infrastructure.Errors;
 using Hms.Api.Infrastructure.Tenancy;
+using Hms.Api.Features.Dashboard;
 using Hms.Domain.Patients;
 using Hms.Infrastructure.Persistence;
 
@@ -9,16 +10,21 @@ public sealed class Handler
 {
     private readonly HmsDbContext _dbContext;
     private readonly ITenantContext _tenantContext;
+    private readonly DashboardStatsCache _dashboardCache;
 
     public Handler(
         HmsDbContext dbContext,
-        ITenantContext tenantContext)
+        ITenantContext tenantContext,
+        DashboardStatsCache dashboardCache)
     {
         _dbContext = dbContext;
         _tenantContext = tenantContext;
+        _dashboardCache = dashboardCache;
     }
 
-    public async Task<Patient> HandleAsync(Command command)
+    public async Task<Patient> HandleAsync(
+        Command command,
+        CancellationToken cancellationToken = default)
     {
         var tenantId = _tenantContext.TenantId;
 
@@ -57,7 +63,8 @@ public sealed class Handler
 
         _dbContext.Patients.Add(patient);
 
-        await _dbContext.SaveChangesAsync();
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dashboardCache.InvalidateAsync(tenantId.Value, cancellationToken);
 
         return patient;
     }

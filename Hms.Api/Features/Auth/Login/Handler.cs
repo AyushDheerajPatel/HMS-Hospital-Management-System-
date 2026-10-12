@@ -1,6 +1,7 @@
-using Hms.Api.Infrastructure.Auth;
+using Hms.Api.Features.Auth;
 using Hms.Api.Infrastructure.Errors;
 using Hms.Domain.Users;
+using Hms.Domain.Tenants;
 using Hms.Infrastructure.Persistence;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -23,7 +24,7 @@ public sealed class Handler
         _jwtTokenService = jwtTokenService;
     }
 
-    public async Task<string> HandleAsync(Command command)
+    public async Task<Response> HandleAsync(Command command)
     {
         var email = command.Email?.Trim().ToLowerInvariant();
 
@@ -57,6 +58,31 @@ public sealed class Handler
                 "Invalid email or password.");
         }
 
-        return _jwtTokenService.CreateToken(user);
+        var tenants = await (
+            from membership in _dbContext.TenantMemberships.AsNoTracking()
+            join tenant in _dbContext.Tenants.AsNoTracking()
+                on membership.TenantId equals tenant.Id
+            where membership.UserId == user.Id
+            orderby tenant.Name
+            select new TenantAccess(
+                tenant.Id,
+                tenant.Name,
+                tenant.Slug,
+                membership.Role))
+            .ToListAsync();
+
+        return new Response(_jwtTokenService.CreateToken(user), tenants);
     }
 }
+
+public sealed record TenantAccess(
+    Guid TenantId,
+    string Name,
+    string Slug,
+    string Role
+);
+
+public sealed record Response(
+    string AccessToken,
+    IReadOnlyList<TenantAccess> Tenants
+);

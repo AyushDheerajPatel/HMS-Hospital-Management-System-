@@ -20,6 +20,11 @@ public sealed class JwtTokenService : IJwtTokenService
         var key = _configuration["Jwt:Key"]
             ?? throw new InvalidOperationException(
                 "JWT key is not configured.");
+        if (Encoding.UTF8.GetByteCount(key) < 32)
+        {
+            throw new InvalidOperationException(
+                "JWT signing key must be at least 32 bytes.");
+        }
 
         var issuer = _configuration["Jwt:Issuer"]
             ?? throw new InvalidOperationException(

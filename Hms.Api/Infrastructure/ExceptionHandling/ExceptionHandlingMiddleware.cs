@@ -8,13 +8,16 @@ public sealed class ExceptionHandlingMiddleware
 {
     private readonly RequestDelegate _next;
     private readonly IProblemDetailsService _problemDetailsService;
+    private readonly ILogger<ExceptionHandlingMiddleware> _logger;
 
     public ExceptionHandlingMiddleware(
         RequestDelegate next,
-        IProblemDetailsService problemDetailsService)
+        IProblemDetailsService problemDetailsService,
+        ILogger<ExceptionHandlingMiddleware> logger)
     {
         _next = next;
         _problemDetailsService = problemDetailsService;
+        _logger = logger;
     }
 
     public async Task InvokeAsync(HttpContext context)
@@ -40,15 +43,19 @@ public sealed class ExceptionHandlingMiddleware
                 exception.Message);
         }
         catch (Exception exception)
-{
-    Console.WriteLine(exception.ToString());
+        {
+            _logger.LogError(
+                "Unhandled request failure for {Method} {Path}; exception type {ExceptionType}.",
+                context.Request.Method,
+                context.Request.Path,
+                exception.GetType().Name);
 
-    await WriteProblemDetailsAsync(
-        context,
-        StatusCodes.Status500InternalServerError,
-        "Internal server error",
-        "An unexpected error occurred.");
-}
+            await WriteProblemDetailsAsync(
+                context,
+                StatusCodes.Status500InternalServerError,
+                "Internal server error",
+                "An unexpected error occurred.");
+        }
     }
 
     private async Task WriteProblemDetailsAsync(

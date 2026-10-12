@@ -1,4 +1,5 @@
-﻿namespace Hms.Api.Features.Tenants.CreateTenant;
+﻿
+namespace Hms.Api.Features.Tenants.CreateTenant;
 
 public static class Endpoint
 {
@@ -13,6 +14,7 @@ public static class Endpoint
             return Results.Created(
                 $"/api/tenants/{tenant.Id}",
                 tenant);
-        });
+        })
+        .RequireAuthorization();
     }
 }

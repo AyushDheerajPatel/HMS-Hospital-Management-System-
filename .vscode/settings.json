@@ -1,0 +1,8 @@
+{
+    "chat.tools.terminal.autoApprove": {
+        "/^git --no-pager status --short; dotnet build Hms\\.slnx --no-restore$/": {
+            "approve": true,
+            "matchCommandLine": true
+        }
+    }
+}

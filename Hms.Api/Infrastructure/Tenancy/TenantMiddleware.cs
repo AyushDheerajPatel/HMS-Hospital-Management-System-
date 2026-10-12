@@ -20,8 +20,11 @@ public sealed class TenantMiddleware
         HmsDbContext dbContext)
     {
         // System-level endpoints don't need a tenant.
-        if (context.Request.Path.StartsWithSegments("/api/auth") ||
-            context.Request.Path.StartsWithSegments("/api/tenants"))
+        if (context.Request.Path == "/api/auth/login" ||
+            context.Request.Path == "/api/auth/register" ||
+            context.Request.Path == "/api/health" ||
+            context.Request.Path == "/api/tenants" ||
+            context.Request.Path == "/api/tenants/register")
         {
             await _next(context);
             return;

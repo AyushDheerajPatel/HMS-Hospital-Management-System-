@@ -6,6 +6,9 @@ namespace Hms.Infrastructure.MongoDB;
 
 public sealed class MongoDbContext
 {
+    private readonly SemaphoreSlim _indexLock = new(1, 1);
+    private bool _indexesCreated;
+
     public IMongoCollection<ClinicalRecordDocument> ClinicalRecords { get; }
 
     public MongoDbContext(IConfiguration configuration)
@@ -20,19 +23,39 @@ public sealed class MongoDbContext
             ?? throw new InvalidOperationException(
                 "MongoDB database name is missing.");
 
-        var mongoUri = new MongoUrl(connectionString);
-
-        Console.WriteLine(
-            $"MongoDB host: {mongoUri.Server.Host}, port: {mongoUri.Server.Port}");
-        Console.WriteLine($"MongoDB username: {mongoUri.Username}");
-        Console.WriteLine($"MongoDB auth database: {mongoUri.AuthenticationSource}");
-        Console.WriteLine($"MongoDB auth mechanism: {mongoUri.AuthenticationMechanism}");
-
         var client = new MongoClient(connectionString);
         var database = client.GetDatabase(databaseName);
 
         ClinicalRecords =
             database.GetCollection<ClinicalRecordDocument>(
                 "clinical_records");
+    }
+
+    public async Task EnsureIndexesAsync(CancellationToken cancellationToken)
+    {
+        await _indexLock.WaitAsync(cancellationToken);
+        try
+        {
+            if (_indexesCreated)
+            {
+                return;
+            }
+
+            var index = new CreateIndexModel<ClinicalRecordDocument>(
+                Builders<ClinicalRecordDocument>.IndexKeys
+                    .Ascending(x => x.TenantId)
+                    .Ascending(x => x.PatientId)
+                    .Descending(x => x.CreatedAtUtc),
+                new CreateIndexOptions { Name = "ix_tenant_patient_created" });
+
+            await ClinicalRecords.Indexes.CreateOneAsync(
+                index,
+                cancellationToken: cancellationToken);
+            _indexesCreated = true;
+        }
+        finally
+        {
+            _indexLock.Release();
+        }
     }
 }
