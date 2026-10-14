@@ -21,6 +21,8 @@ public sealed class UserConfiguration
         builder.Property(x => x.PasswordHash)
             .IsRequired();
 
+        builder.Property(x => x.ActiveSessionId);
+
         builder.HasIndex(x => x.Email)
             .IsUnique();
     }

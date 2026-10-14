@@ -1,4 +1,6 @@
 using Hms.Domain.Tenants;
+using Hms.Domain.TenantMemberships;
+using Hms.Api.Infrastructure.Auth;
 using Hms.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -9,22 +11,32 @@ namespace Hms.Api.Features.Tenants.CreateTenant;
 public sealed class Handler
 {
     private readonly HmsDbContext _dbContext;
+    private readonly ICurrentUser _currentUser;
 
-    public Handler(HmsDbContext dbContext)
+    public Handler(HmsDbContext dbContext, ICurrentUser currentUser)
     {
         _dbContext = dbContext;
+        _currentUser = currentUser;
     }
 
     public async Task<Tenant> HandleAsync(Command command)
     {
         Validate(command);
 
+        var userId = _currentUser.UserId
+            ?? throw new ValidationException("Authentication is required.");
         var tenant = new Tenant(
             Guid.NewGuid(),
             command.Name.Trim(),
             command.Slug.Trim().ToLowerInvariant());
+        var membership = new TenantMembership(
+            Guid.NewGuid(),
+            userId,
+            tenant.Id,
+            "admin");
 
         _dbContext.Tenants.Add(tenant);
+        _dbContext.TenantMemberships.Add(membership);
 
         try
         {

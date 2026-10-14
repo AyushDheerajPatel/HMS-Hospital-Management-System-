@@ -70,10 +70,12 @@ public sealed class Handler
             .Select(x => new AppointmentItem(
                 x.Id,
                 x.PatientId,
+                x.DoctorId,
                 x.ScheduledAtUtc,
                 x.Reason,
                 x.Status,
-                x.CreatedAtUtc))
+                x.CreatedAtUtc,
+                x.Version))
             .ToListAsync();
 
         var totalPages = (int)Math.Ceiling(
@@ -91,10 +93,12 @@ public sealed class Handler
 public sealed record AppointmentItem(
     Guid Id,
     Guid PatientId,
+    Guid? DoctorId,
     DateTime ScheduledAtUtc,
     string Reason,
     string Status,
-    DateTime CreatedAtUtc
+    DateTime CreatedAtUtc,
+    int Version
 );
 
 public sealed record Response(

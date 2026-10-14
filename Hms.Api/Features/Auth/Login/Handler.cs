@@ -1,4 +1,5 @@
 using Hms.Api.Features.Auth;
+using Hms.Api.Infrastructure.Auth;
 using Hms.Api.Infrastructure.Errors;
 using Hms.Domain.Users;
 using Hms.Domain.Tenants;
@@ -13,18 +14,23 @@ public sealed class Handler
     private readonly HmsDbContext _dbContext;
     private readonly IPasswordHasher<User> _passwordHasher;
     private readonly IJwtTokenService _jwtTokenService;
+    private readonly IActiveSessionStore _activeSessionStore;
 
     public Handler(
         HmsDbContext dbContext,
         IPasswordHasher<User> passwordHasher,
-        IJwtTokenService jwtTokenService)
+        IJwtTokenService jwtTokenService,
+        IActiveSessionStore activeSessionStore)
     {
         _dbContext = dbContext;
         _passwordHasher = passwordHasher;
         _jwtTokenService = jwtTokenService;
+        _activeSessionStore = activeSessionStore;
     }
 
-    public async Task<Response> HandleAsync(Command command)
+    public async Task<Response> HandleAsync(
+        Command command,
+        CancellationToken cancellationToken = default)
     {
         var email = command.Email?.Trim().ToLowerInvariant();
 
@@ -39,7 +45,9 @@ public sealed class Handler
         }
 
         var user = await _dbContext.Users
-            .SingleOrDefaultAsync(x => x.Email == email);
+            .SingleOrDefaultAsync(
+                x => x.Email == email,
+                cancellationToken);
 
         if (user is null)
         {
@@ -69,9 +77,19 @@ public sealed class Handler
                 tenant.Name,
                 tenant.Slug,
                 membership.Role))
-            .ToListAsync();
+            .ToListAsync(cancellationToken);
 
-        return new Response(_jwtTokenService.CreateToken(user), tenants);
+        var sessionId = Guid.NewGuid();
+        var accessToken = _jwtTokenService.CreateToken(user, sessionId);
+        await _activeSessionStore.ActivateAsync(
+            user.Id,
+            sessionId,
+            cancellationToken);
+
+        return new Response(
+            accessToken,
+            user.Id,
+            tenants);
     }
 }
 
@@ -84,5 +102,6 @@ public sealed record TenantAccess(
 
 public sealed record Response(
     string AccessToken,
+    Guid UserId,
     IReadOnlyList<TenantAccess> Tenants
 );

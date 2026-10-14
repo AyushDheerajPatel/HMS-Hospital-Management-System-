@@ -6,9 +6,12 @@ public static class Endpoint
     {
         endpoints.MapPost("/api/auth/login", async (
             Command command,
-            Handler handler) =>
+            Handler handler,
+            CancellationToken cancellationToken) =>
         {
-            var response = await handler.HandleAsync(command);
+            var response = await handler.HandleAsync(
+                command,
+                cancellationToken);
             return Results.Ok(response);
         });
     }

@@ -1,4 +1,5 @@
 using Hms.Api.Infrastructure.Errors;
+using Hms.Api.Infrastructure.Auth;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Extensions;
 
@@ -41,6 +42,26 @@ public sealed class ExceptionHandlingMiddleware
                 StatusCodes.Status409Conflict,
                 "Conflict",
                 exception.Message);
+        }
+        catch (ForbiddenException exception)
+        {
+            await WriteProblemDetailsAsync(
+                context,
+                StatusCodes.Status403Forbidden,
+                "Forbidden",
+                exception.Message);
+        }
+        catch (SessionStoreUnavailableException exception)
+        {
+            _logger.LogError(
+                "Authentication session state is unavailable; exception type {ExceptionType}.",
+                exception.InnerException?.GetType().Name ?? exception.GetType().Name);
+            context.Response.Headers.RetryAfter = "5";
+            await WriteProblemDetailsAsync(
+                context,
+                StatusCodes.Status503ServiceUnavailable,
+                "Authentication service unavailable",
+                "Please retry the request shortly.");
         }
         catch (Exception exception)
         {

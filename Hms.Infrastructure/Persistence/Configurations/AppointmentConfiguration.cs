@@ -1,4 +1,5 @@
 using Hms.Domain.Appointments;
+using Hms.Domain.Users;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
@@ -25,7 +26,17 @@ public sealed class AppointmentConfiguration
         builder.Property(x => x.ScheduledAtUtc)
             .IsRequired();
 
+        builder.HasOne<User>()
+            .WithMany()
+            .HasForeignKey(x => x.DoctorId)
+            .OnDelete(DeleteBehavior.Restrict);
+
         builder.Property(x => x.CreatedAtUtc)
+            .IsRequired();
+
+        builder.Property(x => x.Version)
+            .HasDefaultValue(1)
+            .IsConcurrencyToken()
             .IsRequired();
 
         builder.HasIndex(x => x.TenantId);
@@ -39,7 +50,15 @@ public sealed class AppointmentConfiguration
         builder.HasIndex(x => new
         {
             x.TenantId,
+            x.DoctorId,
+            x.ScheduledAtUtc
+        });
+
+        builder.HasIndex(x => new
+        {
+            x.TenantId,
             x.PatientId
         });
+
     }
 }

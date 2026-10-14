@@ -1,4 +1,4 @@
-import type { Patient } from "./api";
+import type { Appointment, Patient } from "./api";
 
 export type CachedPatient = Pick<
   Patient,
@@ -8,14 +8,19 @@ export type CachedPatient = Pick<
 export type OfflineAppointment = {
   operationId: string;
   tenantId: string;
+  userId?: string;
+  doctorId?: string;
   patientId: string;
   scheduledAtUtc: string;
   reason?: string;
   state: "pending" | "syncing" | "synced" | "failed";
   retryable: boolean;
   retryCount: number;
+  nextAttemptAtUtc?: string;
   message?: string;
   syncedAtUtc?: string;
+  serverAppointmentId?: string;
+  confirmedAppointment?: Appointment;
 };
 
 const DATABASE_NAME = "hms-offline";
@@ -144,6 +149,17 @@ export async function saveAppointment(
   );
 }
 
+export async function removeAppointment(
+  operationId: string,
+): Promise<void> {
+  await transact(
+    [APPOINTMENT_STORE],
+    "readwrite",
+    (transaction) =>
+      transaction.objectStore(APPOINTMENT_STORE).delete(operationId),
+  );
+}
+
 export async function getAppointments(
   tenantId: string,
 ): Promise<OfflineAppointment[]> {
@@ -155,7 +171,11 @@ export async function getAppointments(
   );
 }
 
-export async function removeTenantData(tenantId: string): Promise<void> {
+export async function removeTenantData(
+  tenantId: string,
+  ownerUserId?: string,
+  discardOwnedOperations = false,
+): Promise<void> {
   const database = await openDatabase();
   await new Promise<void>((resolve, reject) => {
     const transaction = database.transaction(
@@ -164,11 +184,22 @@ export async function removeTenantData(tenantId: string): Promise<void> {
     );
     for (const storeName of [PATIENT_STORE, APPOINTMENT_STORE]) {
       const store = transaction.objectStore(storeName);
-      const request = store.index("tenantId").openKeyCursor(IDBKeyRange.only(tenantId));
+      const request = store.index("tenantId").openCursor(IDBKeyRange.only(tenantId));
       request.onsuccess = () => {
         const cursor = request.result;
         if (cursor) {
-          store.delete(cursor.primaryKey);
+          const operation = storeName === APPOINTMENT_STORE
+            ? cursor.value as OfflineAppointment
+            : undefined;
+          if (
+            !operation ||
+            operation.state === "synced" ||
+            (discardOwnedOperations &&
+              ownerUserId !== undefined &&
+              operation.userId === ownerUserId)
+          ) {
+            store.delete(cursor.primaryKey);
+          }
           cursor.continue();
         }
       };

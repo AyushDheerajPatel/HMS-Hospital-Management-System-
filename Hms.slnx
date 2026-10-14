@@ -1,5 +1,6 @@
 <Solution>
   <Project Path="Hms.Api/Hms.Api.csproj" />
+  <Project Path="Hms.Api.Tests/Hms.Api.Tests.csproj" />
   <Project Path="Hms.Domain/Hms.Domain.csproj" />
   <Project Path="Hms.Infrastructure/Hms.Infrastructure.csproj" />
 </Solution>

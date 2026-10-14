@@ -36,36 +36,7 @@ public sealed class Handler
                 "Tenant context is required.");
         }
 
-        if (string.IsNullOrWhiteSpace(command.Diagnosis))
-        {
-            throw new ValidationException(
-                "Diagnosis is required.");
-        }
-
-        if (command.Diagnosis.Trim().Length > 200)
-        {
-            throw new ValidationException(
-                "Diagnosis must be 200 characters or fewer.");
-        }
-
-        if (string.IsNullOrWhiteSpace(command.Notes))
-        {
-            throw new ValidationException(
-                "Clinical notes are required.");
-        }
-
-        if (command.Notes.Trim().Length > 5000)
-        {
-            throw new ValidationException(
-                "Notes must be 5000 characters or fewer.");
-        }
-
-        if (command.Medications is { Count: > 50 } ||
-            command.Medications?.Any(x => x is null || x.Length > 200) == true)
-        {
-            throw new ValidationException(
-                "Provide no more than 50 medications, each 200 characters or fewer.");
-        }
+        ClinicalRecordValidation.Validate(command);
 
         var patientExists = await _dbContext.Patients
             .AnyAsync(x =>
@@ -86,11 +57,11 @@ public sealed class Handler
             PatientId = patientId,
             Diagnosis = command.Diagnosis.Trim(),
             Notes = command.Notes.Trim(),
-            Medications = command.Medications?
-                .Where(x => !string.IsNullOrWhiteSpace(x))
-                .Select(x => x.Trim())
-                .ToList() ?? [],
-            CreatedAtUtc = DateTime.UtcNow
+            Medications = ClinicalRecordValidation.Clean(command.Medications),
+            Allergies = ClinicalRecordValidation.Clean(command.Allergies),
+            MedicalHistory = command.MedicalHistory?.Trim() ?? string.Empty,
+            CreatedAtUtc = DateTime.UtcNow,
+            UpdatedAtUtc = DateTime.UtcNow
         };
 
         await _mongoDbContext.ClinicalRecords

@@ -15,7 +15,7 @@ public sealed class JwtTokenService : IJwtTokenService
         _configuration = configuration;
     }
 
-    public string CreateToken(User user)
+    public string CreateToken(User user, Guid sessionId)
     {
         var key = _configuration["Jwt:Key"]
             ?? throw new InvalidOperationException(
@@ -42,7 +42,9 @@ public sealed class JwtTokenService : IJwtTokenService
 
             new Claim(
                 JwtRegisteredClaimNames.Email,
-                user.Email)
+                user.Email),
+
+            new Claim("sid", sessionId.ToString())
         };
 
         var securityKey = new SymmetricSecurityKey(
@@ -56,7 +58,8 @@ public sealed class JwtTokenService : IJwtTokenService
             issuer,
             audience,
             claims,
-            expires: DateTime.UtcNow.AddHours(2),
+            expires: DateTime.UtcNow.Add(
+                ActiveSessionConstants.AccessTokenLifetime),
             signingCredentials: credentials);
 
         return new JwtSecurityTokenHandler()

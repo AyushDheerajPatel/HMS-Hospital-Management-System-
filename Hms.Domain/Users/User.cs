@@ -8,6 +8,8 @@ public sealed class User
 
     public string PasswordHash { get; private set; }
 
+    public Guid? ActiveSessionId { get; private set; }
+
     public User(
         Guid id,
         string email,
@@ -21,5 +23,21 @@ public sealed class User
     public void SetPasswordHash(string passwordHash)
     {
         PasswordHash = passwordHash;
+    }
+
+    public void StartSession(Guid sessionId)
+    {
+        ActiveSessionId = sessionId;
+    }
+
+    public bool EndSession(Guid sessionId)
+    {
+        if (ActiveSessionId != sessionId)
+        {
+            return false;
+        }
+
+        ActiveSessionId = null;
+        return true;
     }
 }

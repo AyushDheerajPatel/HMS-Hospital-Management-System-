@@ -4,5 +4,5 @@ namespace Hms.Api.Features.Auth;
 
 public interface IJwtTokenService
 {
-    string CreateToken(User user);
+    string CreateToken(User user, Guid sessionId);
 }

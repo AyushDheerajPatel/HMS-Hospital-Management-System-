@@ -1,7 +1,9 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import {
   Activity,
   CalendarDays,
+  CalendarClock,
+  FileText,
   LayoutDashboard,
   LogOut,
   Menu,
@@ -60,31 +62,59 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
-  createAppointment,
   getDashboardStats,
   getAppointments,
+  getAppointmentDoctors,
+  getAvailableAppointmentSlots,
   getPatients,
   login,
+  createHospitalConnection,
+  logout,
+  logoutAllDevices,
+  registerAccount,
   registerTenant,
+  updateAppointment,
+  changeAppointmentStatus,
+  setDoctorAvailability,
   synchronizeAppointment,
+  validateSession,
   ApiError,
   type Appointment,
+  type AppointmentDoctor,
   type DashboardStats,
   type Patient,
   type TenantAccess,
+  type TenantRegistration,
 } from "./api";
 import {
   addAppointment,
   getAppointments as getOfflineAppointments,
   getPatients as getOfflinePatients,
+  removeAppointment,
   removeTenantData,
   saveAppointment,
   savePatients,
   type CachedPatient,
   type OfflineAppointment,
 } from "./offlineStore";
+import {
+  getSyncRetryDelayMs,
+  isRetryableSyncError,
+  isRetryableSyncStatus,
+  isOperationOwnedBySession,
+} from "./offlineSync";
+import { CreatePatientDialog } from "./components/CreatePatientDialog";
+import { ClinicalRecordsPage } from "./components/ClinicalRecordsPage";
+import { HospitalStaffSettings } from "./components/HospitalStaffSettings";
+import { PatientDetailsSheet } from "./components/PatientDetailsSheet";
 
-type Page = "Dashboard" | "Patients" | "Appointments" | "Settings";
+type Page = "Dashboard" | "Patients" | "Appointments" | "Clinical Records" | "Settings";
+
+function getUtcDateInputValue(daysFromToday = 0): string {
+  const date = new Date();
+  date.setUTCDate(date.getUTCDate() + daysFromToday);
+  return date.toISOString().slice(0, 10);
+}
 
 function readTenants(): TenantAccess[] {
   const value = sessionStorage.getItem("tenantAccess");
@@ -150,66 +180,123 @@ async function syncTenantAppointments(
   tenantId: string,
   includeRetryableFailures = false,
 ): Promise<void> {
-  if (!navigator.onLine || syncLocks.has(tenantId)) return;
-  syncLocks.add(tenantId);
-  try {
-    const operations = await getOfflineAppointments(tenantId);
-    for (const operation of operations) {
-      if (operation.state === "synced") {
-        continue;
-      }
-      if (operation.state === "failed" && !operation.retryable) continue;
-      if (
-        operation.state === "failed" &&
-        operation.retryCount >= 5 &&
-        !includeRetryableFailures
-      ) continue;
+  const accessToken = sessionStorage.getItem("accessToken");
+  if (
+    !navigator.onLine ||
+    !accessToken ||
+    sessionStorage.getItem("activeTenantId") !== tenantId ||
+    syncLocks.has(tenantId)
+  ) return;
+  const activeUserId = sessionStorage.getItem("userId");
+  if (!activeUserId) return;
 
-      const operationToSync =
-        operation.state === "syncing"
-          ? { ...operation, state: "pending" as const }
-          : operation;
-      await saveQueuedOperation({
-        ...operationToSync,
-        state: "syncing",
-        message: undefined,
-      });
-      try {
-        await synchronizeAppointment(operationToSync, tenantId);
-        await saveQueuedOperation({
-          operationId: operation.operationId,
-          tenantId,
-          patientId: operation.patientId,
-          scheduledAtUtc: operation.scheduledAtUtc,
-          state: "synced",
-          retryable: false,
-          retryCount: operationToSync.retryCount,
-          syncedAtUtc: new Date().toISOString(),
-        });
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 401) {
-          window.dispatchEvent(new Event("hms:unauthorized"));
+  const sync = async () => {
+    if (syncLocks.has(tenantId)) return;
+    syncLocks.add(tenantId);
+    try {
+      const operations = await getOfflineAppointments(tenantId);
+      for (const operation of operations) {
+        if (
+          sessionStorage.getItem("accessToken") !== accessToken ||
+          sessionStorage.getItem("userId") !== activeUserId ||
+          sessionStorage.getItem("activeTenantId") !== tenantId
+        ) {
           break;
         }
-        const retryable =
-          error instanceof TypeError ||
-          (error instanceof ApiError &&
-            (error.status === 429 || error.status >= 500));
+        if (operation.tenantId !== tenantId || operation.state === "synced") {
+          continue;
+        }
+        if (!operation.userId) {
+          await saveQueuedOperation({
+            ...operation,
+            state: "failed",
+            retryable: false,
+            message:
+              "This queued appointment has no saved account identity. Sign in with the original account or discard it.",
+          });
+          continue;
+        }
+        if (!isOperationOwnedBySession(operation, tenantId, activeUserId)) {
+          continue;
+        }
+        if (operation.state === "failed" && !operation.retryable) continue;
+        if (
+          operation.nextAttemptAtUtc &&
+          Date.parse(operation.nextAttemptAtUtc) > Date.now() &&
+          !includeRetryableFailures
+        ) continue;
+
+        const operationToSync =
+          operation.state === "syncing"
+            ? { ...operation, state: "pending" as const }
+            : operation;
         await saveQueuedOperation({
           ...operationToSync,
-          state: "failed",
-          retryable,
-          retryCount: operation.retryCount + 1,
-          message:
-            error instanceof Error
-              ? error.message
-              : "Unable to synchronize appointment.",
+          state: "syncing",
+          message: undefined,
         });
+        try {
+          const appointment = await synchronizeAppointment(
+            operationToSync,
+            tenantId,
+            accessToken,
+          );
+          await saveQueuedOperation({
+            ...operationToSync,
+            state: "synced",
+            retryable: false,
+            retryCount: operationToSync.retryCount,
+            syncedAtUtc: new Date().toISOString(),
+            serverAppointmentId: appointment.id,
+            confirmedAppointment: appointment,
+            nextAttemptAtUtc: undefined,
+            message: undefined,
+          });
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 401) {
+            window.dispatchEvent(new Event("hms:unauthorized"));
+            break;
+          }
+          const retryable =
+            isRetryableSyncError(error) ||
+            (error instanceof ApiError &&
+              isRetryableSyncStatus(error.status));
+          const retryDelayMs = getSyncRetryDelayMs(
+            operation.retryCount,
+            Math.random,
+            error instanceof ApiError ? error.retryAfterMs : undefined,
+          );
+          await saveQueuedOperation({
+            ...operationToSync,
+            state: retryable ? "pending" : "failed",
+            retryable,
+            retryCount: operation.retryCount + 1,
+            nextAttemptAtUtc: retryable
+              ? new Date(Date.now() + retryDelayMs).toISOString()
+              : undefined,
+            message:
+              error instanceof Error
+                ? error.message
+                : "Unable to synchronize appointment.",
+          });
+        }
       }
+    } finally {
+      syncLocks.delete(tenantId);
     }
-  } finally {
-    syncLocks.delete(tenantId);
+  };
+
+  if ("locks" in navigator) {
+    await navigator.locks.request(
+      `hms:appointment-sync:${tenantId}`,
+      { ifAvailable: true },
+      async (lock) => {
+        if (lock) await sync();
+      },
+    );
+    return;
   }
+  await sync();
 }
 
 function StatusBadge({ status }: { status: string }) {
@@ -223,6 +310,16 @@ function StatusBadge({ status }: { status: string }) {
   return <Badge variant={variant}>{status}</Badge>;
 }
 
+function getAppointmentPatientLabel(
+  patientId: string,
+  patients: Patient[],
+): string {
+  const patient = patients.find((item) => item.id === patientId);
+  return patient
+    ? `${patient.firstName} ${patient.lastName}`
+    : `Patient ${patientId.slice(0, 8)}`;
+}
+
 function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -231,6 +328,14 @@ function App() {
   const [token, setToken] = useState(
     () => sessionStorage.getItem("accessToken") ?? "",
   );
+  const [sessionStatus, setSessionStatus] = useState<
+    "checking" | "valid" | "unavailable"
+  >(() => sessionStorage.getItem("accessToken") ? "checking" : "valid");
+  const [userId, setUserId] = useState(
+    () => sessionStorage.getItem("userId") ?? "",
+  );
+  const [sessionCheckAttempt, setSessionCheckAttempt] = useState(0);
+  const logoutInProgress = useRef(false);
   const [tenants, setTenants] = useState<TenantAccess[]>(readTenants);
   const [tenantId, setTenantId] = useState(
     () => sessionStorage.getItem("activeTenantId") ?? "",
@@ -238,6 +343,7 @@ function App() {
   const [isOnline, setIsOnline] = useState(() => navigator.onLine);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [registeringHospital, setRegisteringHospital] = useState(false);
+  const [registeringAccount, setRegisteringAccount] = useState(false);
   const [hospitalName, setHospitalName] = useState("");
   const [hospitalSlug, setHospitalSlug] = useState("");
   const [registrationSuccess, setRegistrationSuccess] = useState("");
@@ -254,7 +360,9 @@ function App() {
   const [patientLoading, setPatientLoading] = useState(false);
   const [patientError, setPatientError] = useState("");
   const [patientOfflineNotice, setPatientOfflineNotice] = useState("");
+  const [patientCreateNotice, setPatientCreateNotice] = useState("");
   const [patientRetry, setPatientRetry] = useState(0);
+  const [selectedPatient, setSelectedPatient] = useState<Patient | null>(null);
 
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [appointmentStatus, setAppointmentStatus] = useState("");
@@ -264,17 +372,89 @@ function App() {
   const [appointmentTotal, setAppointmentTotal] = useState(0);
   const [appointmentTotalPages, setAppointmentTotalPages] = useState(0);
   const [appointmentRetry, setAppointmentRetry] = useState(0);
+  const [appointmentDoctors, setAppointmentDoctors] = useState<
+    AppointmentDoctor[]
+  >([]);
+  const [doctorsLoading, setDoctorsLoading] = useState(false);
+  const [doctorError, setDoctorError] = useState("");
+  const [availableSlots, setAvailableSlots] = useState<string[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [slotsError, setSlotsError] = useState("");
+  const [availabilityRefresh, setAvailabilityRefresh] = useState(0);
+  const [availabilityDate, setAvailabilityDate] = useState(
+    () => getUtcDateInputValue(1),
+  );
+  const [availabilityDoctorId, setAvailabilityDoctorId] = useState("");
+  const [availabilityStartTimeUtc, setAvailabilityStartTimeUtc] = useState("");
+  const [availabilityEndTimeUtc, setAvailabilityEndTimeUtc] = useState("");
+  const [availabilityMessage, setAvailabilityMessage] = useState("");
+  const [savingAvailability, setSavingAvailability] = useState(false);
 
   const [appointmentPatients, setAppointmentPatients] = useState<Patient[]>([]);
+  const [appointmentPatientsLoading, setAppointmentPatientsLoading] =
+    useState(false);
+  const [appointmentPatientsError, setAppointmentPatientsError] = useState("");
+  const [appointmentPatientsRetry, setAppointmentPatientsRetry] = useState(0);
   const [newPatientId, setNewPatientId] = useState("");
+  const [newDoctorId, setNewDoctorId] = useState("");
+  const [newAppointmentDate, setNewAppointmentDate] = useState(
+    () => getUtcDateInputValue(),
+  );
   const [newScheduledAt, setNewScheduledAt] = useState("");
   const [newAppointmentReason, setNewAppointmentReason] = useState("");
   const [creatingAppointment, setCreatingAppointment] = useState(false);
   const [appointmentDialogOpen, setAppointmentDialogOpen] = useState(false);
+  const [reschedulingOfflineOperationId, setReschedulingOfflineOperationId] =
+    useState<string | null>(null);
   const [createAppointmentMessage, setCreateAppointmentMessage] = useState("");
+  const [reschedulingAppointment, setReschedulingAppointment] =
+    useState<Appointment | null>(null);
+  const [rescheduledAt, setRescheduledAt] = useState("");
+  const [editingAppointmentPatientId, setEditingAppointmentPatientId] =
+    useState("");
+  const [editingAppointmentReason, setEditingAppointmentReason] = useState("");
+  const [rescheduling, setRescheduling] = useState(false);
+  const tenantRole = tenants.find((tenant) => tenant.tenantId === tenantId)
+    ?.role.toLowerCase();
+  const canConfigureAvailability =
+    tenantRole === "admin" || tenantRole === "doctor";
 
   useEffect(() => {
-    if (!token || !tenantId || page !== "Patients") return;
+    if (!token) return;
+
+    let cancelled = false;
+    const controller = new AbortController();
+
+    void validateSession(controller.signal)
+      .then((verifiedUserId) => {
+        if (!cancelled) {
+          sessionStorage.setItem("userId", verifiedUserId);
+          setUserId(verifiedUserId);
+          setSessionStatus("valid");
+        }
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        if (error instanceof ApiError && error.status === 401) {
+          window.dispatchEvent(new Event("hms:unauthorized"));
+          return;
+        }
+        setSessionStatus("unavailable");
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [token, sessionCheckAttempt]);
+
+  useEffect(() => {
+    if (
+      !token ||
+      sessionStatus !== "valid" ||
+      !tenantId ||
+      page !== "Patients"
+    ) return;
 
     let cancelled = false;
 
@@ -353,10 +533,122 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [token, tenantId, page, patientSearch, patientPage, patientRetry, isOnline]);
+  }, [
+    token,
+    sessionStatus,
+    tenantId,
+    page,
+    patientSearch,
+    patientPage,
+    patientRetry,
+    isOnline,
+  ]);
 
   useEffect(() => {
-    if (!token || !tenantId || page !== "Appointments") return;
+    if (
+      !token ||
+      sessionStatus !== "valid" ||
+      !tenantId ||
+      page !== "Appointments"
+    ) return;
+    if (!isOnline) return;
+
+    let cancelled = false;
+    async function loadDoctors() {
+      setDoctorsLoading(true);
+      setDoctorError("");
+      try {
+        const doctors = await getAppointmentDoctors(tenantId);
+        if (!cancelled) {
+          setAppointmentDoctors(doctors);
+          if (tenantRole === "doctor" && doctors.some(
+            (doctor) => doctor.id === userId,
+          )) {
+            setAvailabilityDoctorId(userId);
+          }
+        }
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof ApiError && error.status === 401) {
+          window.dispatchEvent(new Event("hms:unauthorized"));
+        }
+        setDoctorError(
+          error instanceof Error ? error.message : "Unable to load doctors.",
+        );
+      } finally {
+        if (!cancelled) setDoctorsLoading(false);
+      }
+    }
+    void loadDoctors();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, sessionStatus, tenantId, page, isOnline, tenantRole, userId]);
+
+  useEffect(() => {
+    if (
+      !token ||
+      sessionStatus !== "valid" ||
+      !tenantId ||
+      page !== "Appointments" ||
+      !newDoctorId ||
+      !newAppointmentDate
+    ) return;
+    if (!isOnline) return;
+
+    let cancelled = false;
+    async function loadSlots() {
+      setSlotsLoading(true);
+      setSlotsError("");
+      setAvailableSlots([]);
+      setNewScheduledAt("");
+      try {
+        const slots = await getAvailableAppointmentSlots(
+          newDoctorId,
+          newAppointmentDate,
+          tenantId,
+        );
+        if (cancelled) return;
+        setAvailableSlots(slots);
+        if (slots.length === 0) {
+          setSlotsError("No available appointment slots for this date.");
+        }
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof ApiError && error.status === 401) {
+          window.dispatchEvent(new Event("hms:unauthorized"));
+        }
+        setSlotsError(
+          error instanceof Error
+            ? error.message
+            : "Unable to load appointment availability.",
+        );
+      } finally {
+        if (!cancelled) setSlotsLoading(false);
+      }
+    }
+    void loadSlots();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    token,
+    sessionStatus,
+    tenantId,
+    page,
+    newDoctorId,
+    newAppointmentDate,
+    isOnline,
+    availabilityRefresh,
+  ]);
+
+  useEffect(() => {
+    if (
+      !token ||
+      sessionStatus !== "valid" ||
+      !tenantId ||
+      (page !== "Appointments" && page !== "Clinical Records")
+    ) return;
 
     let cancelled = false;
 
@@ -403,6 +695,7 @@ function App() {
     };
   }, [
     token,
+    sessionStatus,
     tenantId,
     page,
     appointmentStatus,
@@ -412,40 +705,73 @@ function App() {
   ]);
 
   useEffect(() => {
-    if (!token || !tenantId || page !== "Appointments") return;
+    if (
+      !token ||
+      sessionStatus !== "valid" ||
+      !tenantId ||
+      (page !== "Appointments" && page !== "Clinical Records")
+    ) return;
 
     let cancelled = false;
 
     async function loadAppointmentPatients() {
+      setAppointmentPatientsLoading(true);
+      setAppointmentPatientsError("");
       try {
         if (isOnline) {
           const patients = await loadAllPatients(tenantId);
           if (!cancelled) setAppointmentPatients(patients);
         } else {
           const patients = await getOfflinePatients(tenantId);
-          if (!cancelled) setAppointmentPatients(patients.map(asPatient));
+          if (!cancelled) {
+            setAppointmentPatients(patients.map(asPatient));
+            if (patients.length === 0) {
+              setAppointmentPatientsError(
+                "No synchronized patients are available offline.",
+              );
+            } else if (page === "Clinical Records") {
+              setAppointmentPatientsError(
+                "Clinical records require an online connection.",
+              );
+            }
+          }
         }
       } catch (error) {
         if (error instanceof ApiError && error.status === 401) {
           window.dispatchEvent(new Event("hms:unauthorized"));
         }
-        if (!cancelled) {
+        if (!cancelled && isNetworkFailure(error)) {
+          setIsOnline(false);
           try {
             const patients = await getOfflinePatients(tenantId);
+            if (cancelled) return;
             setAppointmentPatients(patients.map(asPatient));
             if (patients.length === 0) {
-              setCreateAppointmentMessage(
-                "No previously synchronized patients are available for offline scheduling.",
+              setAppointmentPatientsError(
+                "No synchronized patients are available offline.",
+              );
+            } else if (page === "Clinical Records") {
+              setAppointmentPatientsError(
+                "Clinical records require an online connection.",
               );
             }
           } catch (storageError) {
-            setCreateAppointmentMessage(
+            if (cancelled) return;
+            setAppointmentPatientsError(
               storageError instanceof Error
                 ? storageError.message
-                : "Unable to read patients for offline scheduling.",
+                : "Unable to load patients for this hospital.",
             );
           }
+        } else if (!cancelled) {
+          setAppointmentPatientsError(
+            error instanceof Error
+              ? error.message
+              : "Unable to load patients for this hospital.",
+          );
         }
+      } finally {
+        if (!cancelled) setAppointmentPatientsLoading(false);
       }
     }
 
@@ -453,10 +779,16 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [token, tenantId, page, isOnline]);
+  }, [token, sessionStatus, tenantId, page, isOnline, appointmentPatientsRetry]);
 
   useEffect(() => {
-    if (!token || !tenantId || page !== "Patients" || !isOnline) return;
+    if (
+      !token ||
+      sessionStatus !== "valid" ||
+      !tenantId ||
+      page !== "Patients" ||
+      !isOnline
+    ) return;
     let cancelled = false;
     void loadAllPatients(tenantId).catch((error: unknown) => {
       if (!cancelled && isNetworkFailure(error)) {
@@ -466,10 +798,16 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [token, tenantId, page, isOnline]);
+  }, [token, sessionStatus, tenantId, page, isOnline]);
 
   useEffect(() => {
-    if (!token || !tenantId || page !== "Dashboard" || !isOnline) return;
+    if (
+      !token ||
+      sessionStatus !== "valid" ||
+      !tenantId ||
+      page !== "Dashboard" ||
+      !isOnline
+    ) return;
 
     let cancelled = false;
     void getDashboardStats(tenantId)
@@ -492,7 +830,15 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [token, tenantId, page, isOnline, patientRetry, appointmentRetry]);
+  }, [
+    token,
+    sessionStatus,
+    tenantId,
+    page,
+    isOnline,
+    patientRetry,
+    appointmentRetry,
+  ]);
 
   useEffect(() => {
     const setOnline = () => setIsOnline(true);
@@ -506,7 +852,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (!token || !tenantId) return;
+    if (!token || sessionStatus !== "valid" || !tenantId) return;
     let cancelled = false;
     async function refreshAndSync() {
       const operations = await getOfflineAppointments(tenantId);
@@ -529,25 +875,51 @@ function App() {
     return () => {
       cancelled = true;
     };
-  }, [token, tenantId, isOnline]);
+  }, [token, sessionStatus, tenantId, isOnline]);
+
+  useEffect(() => {
+    if (!token || sessionStatus !== "valid" || !tenantId || !isOnline) return;
+    const nextRetry = offlineOperations
+      .filter(
+        (operation) =>
+            (operation.state === "pending" || operation.state === "failed") &&
+          operation.retryable &&
+          operation.userId === userId &&
+          operation.nextAttemptAtUtc,
+      )
+      .map((operation) => Date.parse(operation.nextAttemptAtUtc!))
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right)[0];
+    if (nextRetry === undefined) return;
+
+    const timer = window.setTimeout(
+      () => void syncTenantAppointments(tenantId),
+      Math.max(0, nextRetry - Date.now()),
+    );
+    return () => window.clearTimeout(timer);
+  }, [token, sessionStatus, tenantId, userId, isOnline, offlineOperations]);
 
   useEffect(() => {
     const onUnauthorized = () => {
+      if (logoutInProgress.current) return;
+      logoutInProgress.current = true;
       const expireSession = async () => {
+        let localDataWarning = "";
         if (tenantId) {
           try {
             await removeTenantData(tenantId);
-          } catch {
-          setTenantNotice(
-            "The expired session's local data could not be cleared automatically. Clear this browser's site data before another user signs in.",
-          );
-            return;
+          } catch (error) {
+            localDataWarning = error instanceof Error
+              ? `The expired session's local data could not be cleared automatically: ${error.message}`
+              : "The expired session's local data could not be cleared automatically.";
           }
         }
         sessionStorage.removeItem("accessToken");
         sessionStorage.removeItem("tenantAccess");
         sessionStorage.removeItem("activeTenantId");
+        sessionStorage.removeItem("userId");
         setToken("");
+        setUserId("");
         setTenantId("");
         setTenants([]);
         setOfflineOperations([]);
@@ -556,7 +928,11 @@ function App() {
         setAppointmentPatients([]);
         setStats(null);
         setPassword("");
-        setMessage("Session expired. Please sign in again.");
+        setMessage(
+          localDataWarning
+            ? `Session expired. Please sign in again. ${localDataWarning}`
+            : "Session expired. Please sign in again.",
+        );
       };
       void expireSession();
     };
@@ -575,6 +951,44 @@ function App() {
     return () =>
       window.removeEventListener("hms:offline-storage-error", onStorageError);
   }, []);
+
+  useEffect(() => {
+    if (!token || sessionStatus !== "valid" || !tenantId || !isOnline) return;
+
+    let disposed = false;
+    let connection: Awaited<ReturnType<typeof createHospitalConnection>> | undefined;
+
+    const connect = async () => {
+      try {
+        connection = await createHospitalConnection(tenantId, () => {
+          if (page === "Appointments") {
+            setAppointmentRetry((current) => current + 1);
+            setAvailabilityRefresh((current) => current + 1);
+          }
+          if (page === "Dashboard") {
+            setPatientRetry((current) => current + 1);
+          }
+        });
+      } catch (error) {
+        if (disposed) return;
+        if (error instanceof ApiError && error.status === 401) {
+          window.dispatchEvent(new Event("hms:unauthorized"));
+          return;
+        }
+        setAppointmentError(
+          error instanceof Error
+            ? `Live appointment updates disconnected: ${error.message}`
+            : "Live appointment updates disconnected.",
+        );
+      }
+    };
+
+    void connect();
+    return () => {
+      disposed = true;
+      void connection?.stop().catch(() => undefined);
+    };
+  }, [token, sessionStatus, tenantId, isOnline, page]);
 
   useEffect(() => {
     const onQueueChanged = (event: Event) => {
@@ -613,9 +1027,13 @@ function App() {
       if (!result.accessToken) {
         throw new Error("Login response did not contain a token.");
       }
+      setSessionStatus("checking");
       sessionStorage.setItem("accessToken", result.accessToken);
+      sessionStorage.setItem("userId", result.userId);
+      logoutInProgress.current = false;
       sessionStorage.setItem("tenantAccess", JSON.stringify(result.tenants));
       setToken(result.accessToken);
+      setUserId(result.userId);
       setTenants(result.tenants);
       const selectedTenant = result.tenants[0]?.tenantId ?? "";
       sessionStorage.setItem("activeTenantId", selectedTenant);
@@ -644,22 +1062,84 @@ function App() {
     setLoginLoading(true);
     setMessage("");
     setRegistrationSuccess("");
+    let registeredTenant: TenantRegistration | null = null;
     try {
-      const result = await registerTenant(
+      registeredTenant = await registerTenant(
         hospitalName,
         hospitalSlug,
         email,
         password,
       );
-      setEmail(result.administratorEmail);
-      setPassword("");
+      const signInResult = await login(email, password);
+      const registeredHospital = signInResult.tenants.find(
+        (tenant) => tenant.tenantId === registeredTenant?.tenantId,
+      );
+      if (!registeredHospital) {
+        throw new Error(
+          "Hospital created, but the administrator membership was not returned. Sign in again or contact support.",
+        );
+      }
+      setSessionStatus("checking");
+      sessionStorage.setItem("accessToken", signInResult.accessToken);
+      sessionStorage.setItem("userId", signInResult.userId);
+      logoutInProgress.current = false;
+      sessionStorage.setItem(
+        "tenantAccess",
+        JSON.stringify(signInResult.tenants),
+      );
+      sessionStorage.setItem("activeTenantId", registeredHospital.tenantId);
+      setToken(signInResult.accessToken);
+      setUserId(signInResult.userId);
+      setTenants(signInResult.tenants);
+      setTenantId(registeredHospital.tenantId);
+      setPage("Dashboard");
+      setPatients([]);
+      setAppointments([]);
+      setAppointmentPatients([]);
+      setStats(null);
+      setOfflineOperations([]);
       setRegisteringHospital(false);
+      setEmail(registeredTenant.administratorEmail);
+      setPassword("");
       setRegistrationSuccess(
-        `${result.name} is registered. Sign in with the administrator account to continue.`,
+        `${registeredTenant.name} is registered. You are signed in as its administrator.`,
+      );
+    } catch (error) {
+      setRegisteringHospital(false);
+      setPassword("");
+      if (registeredTenant) {
+        setEmail(registeredTenant.administratorEmail);
+        setRegistrationSuccess(
+          `${registeredTenant.name} was created with an administrator membership. Automatic sign-in failed; sign in with your administrator account to continue.`,
+        );
+        setMessage(
+          error instanceof Error ? error.message : "Automatic sign-in failed.",
+        );
+      } else {
+        setMessage(
+          error instanceof Error ? error.message : "Hospital registration failed.",
+        );
+      }
+    } finally {
+      setLoginLoading(false);
+    }
+  }
+
+  async function handleRegisterAccount(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setLoginLoading(true);
+    setMessage("");
+    setRegistrationSuccess("");
+    try {
+      await registerAccount(email, password);
+      setPassword("");
+      setRegisteringAccount(false);
+      setRegistrationSuccess(
+        "Account created, but it is not connected to a hospital yet. For privacy, a hospital administrator must add this account in Hospital Staff settings. Sign in again after they add you.",
       );
     } catch (error) {
       setMessage(
-        error instanceof Error ? error.message : "Hospital registration failed.",
+        error instanceof Error ? error.message : "Account registration failed.",
       );
     } finally {
       setLoginLoading(false);
@@ -668,8 +1148,17 @@ function App() {
 
   async function handleCreateAppointment(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!tenantId || !newPatientId || !newScheduledAt || !newAppointmentReason.trim()) {
-      setCreateAppointmentMessage("Patient, date/time, and reason are required.");
+    if (
+      !userId ||
+      !tenantId ||
+      !newPatientId ||
+      !newDoctorId ||
+      !newScheduledAt ||
+      !newAppointmentReason.trim()
+    ) {
+      setCreateAppointmentMessage(
+        "Patient, doctor, available time, and reason are required.",
+      );
       return;
     }
     const scheduledAtUtc = new Date(newScheduledAt);
@@ -684,84 +1173,75 @@ function App() {
     const operation: OfflineAppointment = {
       operationId,
       tenantId,
+      userId,
       patientId: newPatientId,
+      doctorId: newDoctorId,
       scheduledAtUtc: scheduledAtUtc.toISOString(),
       reason: newAppointmentReason.trim(),
       state: "pending",
       retryable: true,
       retryCount: 0,
     };
+    let savedLocally = false;
     try {
+      await addAppointment(operation);
+      savedLocally = true;
+      if (reschedulingOfflineOperationId) {
+        await removeAppointment(reschedulingOfflineOperationId);
+        setReschedulingOfflineOperationId(null);
+      }
+      setOfflineOperations(await getOfflineAppointments(tenantId));
       if (!isOnline) {
-        await addAppointment(operation);
-        setOfflineOperations(await getOfflineAppointments(tenantId));
         setCreateAppointmentMessage(
-          "Appointment queued on this device. It is not confirmed until synchronization succeeds.",
+          "Appointment is pending synchronization. It is not booked until the server confirms it.",
         );
         setAppointmentDialogOpen(false);
         setNewPatientId("");
+        setNewDoctorId("");
         setNewScheduledAt("");
         setNewAppointmentReason("");
         return;
       }
-      await createAppointment(
-        newPatientId,
-        newScheduledAt,
-        newAppointmentReason,
-        tenantId,
-        operationId,
+      await syncTenantAppointments(tenantId, true);
+      const updatedOperations = await getOfflineAppointments(tenantId);
+      setOfflineOperations(updatedOperations);
+      const synchronized = updatedOperations.find(
+        (queued) => queued.operationId === operationId,
       );
-      try {
-        await saveQueuedOperation({
-          ...operation,
-          reason: undefined,
-          state: "synced",
-          retryable: false,
-          syncedAtUtc: new Date().toISOString(),
-        });
-        setOfflineOperations(await getOfflineAppointments(tenantId));
-      } catch (error) {
-        window.dispatchEvent(
-          new CustomEvent("hms:offline-storage-error", {
-            detail:
-              error instanceof Error ? error.message : "Unable to save sync receipt.",
-          }),
-        );
-      }
-      setCreateAppointmentMessage("Appointment created successfully.");
+      setCreateAppointmentMessage(
+        synchronized?.state === "synced"
+          ? "Appointment created successfully."
+          : synchronized?.state === "failed" && !synchronized.retryable
+            ? `The appointment could not be booked. ${synchronized.message ?? "Review the synchronization error and choose another available slot."}`
+            : "Appointment is pending synchronization. It is not booked until the server confirms it.",
+      );
       setAppointmentDialogOpen(false);
       setNewPatientId("");
+      setNewDoctorId("");
       setNewScheduledAt("");
       setNewAppointmentReason("");
       setAppointmentPage(1);
       setAppointmentRetry((current) => current + 1);
+      setAvailabilityRefresh((current) => current + 1);
+      setNewAppointmentDate(getUtcDateInputValue());
     } catch (error) {
-      if (isNetworkFailure(error)) {
-        if (error instanceof TypeError || !navigator.onLine) {
-          setIsOnline(false);
-        }
-        try {
-          await addAppointment(operation);
-          setOfflineOperations(await getOfflineAppointments(tenantId));
-          setCreateAppointmentMessage(
-            "Connection was lost. Appointment queued on this device and is not confirmed until synchronization succeeds.",
-          );
-          setAppointmentDialogOpen(false);
-          setNewPatientId("");
-          setNewScheduledAt("");
-          setNewAppointmentReason("");
-          return;
-        } catch (storageError) {
-          setCreateAppointmentMessage(
-            storageError instanceof Error
-              ? storageError.message
-              : "Unable to safely queue the appointment offline.",
-          );
-          return;
-        }
-      }
       if (error instanceof ApiError && error.status === 401) {
         window.dispatchEvent(new Event("hms:unauthorized"));
+      }
+      if (
+        savedLocally &&
+        (error instanceof TypeError || !navigator.onLine)
+      ) {
+        setIsOnline(false);
+        setCreateAppointmentMessage(
+          "Appointment is pending synchronization. It is not booked until the server confirms it.",
+        );
+        setAppointmentDialogOpen(false);
+        setNewPatientId("");
+        setNewDoctorId("");
+        setNewScheduledAt("");
+        setNewAppointmentReason("");
+        return;
       }
       setCreateAppointmentMessage(
         error instanceof Error
@@ -773,36 +1253,104 @@ function App() {
     }
   }
 
-  async function handleLogout(sessionExpired = false) {
+  async function handleSetAvailability(
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (
+      !tenantId ||
+      !availabilityDoctorId ||
+      !availabilityDate ||
+      !availabilityStartTimeUtc ||
+      !availabilityEndTimeUtc
+    ) {
+      setAvailabilityMessage(
+        "Select a doctor, date, and UTC start/end times.",
+      );
+      return;
+    }
+
+    setSavingAvailability(true);
+    setAvailabilityMessage("");
+    try {
+      const availability = await setDoctorAvailability(
+        {
+          doctorId: availabilityDoctorId,
+          date: availabilityDate,
+          startTimeUtc: availabilityStartTimeUtc,
+          endTimeUtc: availabilityEndTimeUtc,
+        },
+        tenantId,
+      );
+      setAvailabilityMessage(
+        `Availability saved for ${availability.date} (UTC).`,
+      );
+      setAvailabilityRefresh((current) => current + 1);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        window.dispatchEvent(new Event("hms:unauthorized"));
+      }
+      setAvailabilityMessage(
+        error instanceof Error
+          ? error.message
+          : "Unable to save doctor availability.",
+      );
+    } finally {
+      setSavingAvailability(false);
+    }
+  }
+
+  async function handleLogout(revokeAllDevices = false) {
+    if (logoutInProgress.current) return;
+    logoutInProgress.current = true;
+    let logoutWarning = "";
     if (tenantId) {
       try {
         const operations = await getOfflineAppointments(tenantId);
         const pendingCount = operations.filter(
-          (operation) => operation.state !== "synced",
+          (operation) =>
+            operation.state !== "synced" &&
+            operation.userId === userId,
         ).length;
         if (
           pendingCount > 0 &&
-          !sessionExpired &&
           !window.confirm(
-            `${pendingCount} appointment operation(s) have not synchronized. Signing out clears their local queue. Continue?`,
+            `${pendingCount} appointment operation(s) have not synchronized. Signing out will discard this account's queued operations; queues saved under other accounts are preserved. Continue?`,
           )
         ) {
+          logoutInProgress.current = false;
           return;
         }
-        await removeTenantData(tenantId);
+        await removeTenantData(tenantId, userId, true);
       } catch (error) {
-        setTenantNotice(
+        logoutWarning =
           error instanceof Error
-            ? `Unable to clear local hospital data: ${error.message}`
-            : "Unable to clear local hospital data.",
-        );
-        return;
+            ? `Local hospital data could not be cleared: ${error.message}`
+            : "Local hospital data could not be cleared.";
+      }
+    }
+    try {
+      if (revokeAllDevices) {
+        await logoutAllDevices();
+      } else {
+        await logout();
+      }
+    } catch (error) {
+      if (!(error instanceof ApiError && error.status === 401)) {
+        logoutWarning = [
+          logoutWarning,
+          error instanceof Error
+            ? `Signed out on this device, but server revocation could not be confirmed: ${error.message}`
+            : "Signed out on this device, but server revocation could not be confirmed.",
+        ].filter(Boolean).join(" ");
       }
     }
     sessionStorage.removeItem("accessToken");
     sessionStorage.removeItem("tenantAccess");
     sessionStorage.removeItem("activeTenantId");
+    sessionStorage.removeItem("userId");
     setToken("");
+    setUserId("");
     setTenantId("");
     setTenants([]);
     setOfflineOperations([]);
@@ -811,15 +1359,20 @@ function App() {
     setAppointmentPatients([]);
     setStats(null);
     setPassword("");
-    setMessage("");
-    setTenantNotice("");
+    setMessage(logoutWarning);
+    setTenantNotice(logoutWarning);
     setPage("Dashboard");
   }
 
   async function handleTenantChange(nextTenantId: string) {
     if (!nextTenantId || nextTenantId === tenantId) return;
     const pending = await getOfflineAppointments(tenantId);
-    if (pending.some((operation) => operation.state !== "synced")) {
+    if (
+      pending.some(
+        (operation) =>
+          operation.userId === userId && operation.state !== "synced",
+      )
+    ) {
       setTenantNotice(
         "Synchronize or discard pending appointment operations before switching hospitals.",
       );
@@ -850,6 +1403,8 @@ function App() {
     try {
       await syncTenantAppointments(tenantId, true);
       setOfflineOperations(await getOfflineAppointments(tenantId));
+      setAppointmentRetry((current) => current + 1);
+      setAvailabilityRefresh((current) => current + 1);
     } catch (error) {
       setCreateAppointmentMessage(
         error instanceof Error ? error.message : "Unable to retry synchronization.",
@@ -857,20 +1412,147 @@ function App() {
     }
   }
 
+  async function handleRescheduleAppointment(
+    event: FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (
+      !tenantId ||
+      !reschedulingAppointment ||
+      !rescheduledAt ||
+      !editingAppointmentPatientId ||
+      !editingAppointmentReason.trim()
+    ) return;
+    setRescheduling(true);
+    setCreateAppointmentMessage("");
+    try {
+      await updateAppointment(
+        reschedulingAppointment.id,
+        editingAppointmentPatientId,
+        rescheduledAt,
+        editingAppointmentReason,
+        reschedulingAppointment.version,
+        tenantId,
+      );
+      setReschedulingAppointment(null);
+      setRescheduledAt("");
+      setCreateAppointmentMessage("Appointment rescheduled successfully.");
+      setAppointmentRetry((current) => current + 1);
+      setAvailabilityRefresh((current) => current + 1);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        window.dispatchEvent(new Event("hms:unauthorized"));
+      }
+      setCreateAppointmentMessage(
+        error instanceof ApiError && error.status === 409
+          ? "This appointment changed since it was loaded. The latest schedule will refresh; review it and try again."
+          : error instanceof Error
+            ? error.message
+            : "Unable to reschedule appointment.",
+      );
+      if (error instanceof ApiError && error.status === 409) {
+        setAppointmentRetry((current) => current + 1);
+        setAvailabilityRefresh((current) => current + 1);
+        setReschedulingAppointment(null);
+      }
+    } finally {
+      setRescheduling(false);
+    }
+  }
+
+  async function updateAppointmentStatus(
+    appointment: Appointment,
+    status: "cancelled" | "completed",
+  ) {
+    if (!tenantId) return;
+    setCreateAppointmentMessage("");
+    try {
+      await changeAppointmentStatus(
+        appointment.id,
+        status,
+        appointment.version,
+        tenantId,
+      );
+      setCreateAppointmentMessage(
+        `Appointment ${status === "cancelled" ? "cancelled" : "marked complete"}.`,
+      );
+      setAppointmentRetry((current) => current + 1);
+      setAvailabilityRefresh((current) => current + 1);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) {
+        window.dispatchEvent(new Event("hms:unauthorized"));
+      }
+      setCreateAppointmentMessage(
+        error instanceof ApiError && error.status === 409
+          ? "This appointment changed since it was loaded. The latest status will refresh."
+          : error instanceof Error
+            ? error.message
+            : "Unable to update appointment status.",
+      );
+      setAppointmentRetry((current) => current + 1);
+      setAvailabilityRefresh((current) => current + 1);
+    }
+  }
+
+  if (token && sessionStatus !== "valid") {
+    const checking = sessionStatus === "checking";
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-muted/40 p-4">
+        <Card className="w-full max-w-md border-0 shadow-xl shadow-primary/5 ring-1 ring-border/70">
+          <CardHeader className="items-center px-8 pt-8 text-center">
+            <CardTitle className="text-2xl tracking-tight">
+              {checking ? "Verifying your sign-in" : "Unable to verify your sign-in"}
+            </CardTitle>
+            <CardDescription>
+              {checking
+                ? "Please wait while HMS checks your active session."
+                : "The authentication service is unavailable. Your saved sign-in has not been cleared."}
+            </CardDescription>
+          </CardHeader>
+          {!checking && (
+            <CardContent className="px-8 pb-8">
+              <Button
+                className="w-full"
+                onClick={() => {
+                  setSessionStatus("checking");
+                  setSessionCheckAttempt((attempt) => attempt + 1);
+                }}
+              >
+                Retry verification
+              </Button>
+            </CardContent>
+          )}
+        </Card>
+      </main>
+    );
+  }
+
   if (!token) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-muted/40 p-4">
-        <Card className="w-full max-w-md">
-          <CardHeader className="items-center text-center">
-            <div className="mb-2 flex size-14 items-center justify-center rounded-xl bg-primary text-primary-foreground">
+        <Card className="w-full max-w-md border-0 shadow-xl shadow-primary/5 ring-1 ring-border/70">
+          <CardHeader className="items-center px-8 pt-8 text-center">
+            <div className="mb-2 flex size-14 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-lg shadow-primary/20">
               <Activity size={28} />
             </div>
-            <CardTitle className="text-2xl">Hospital Management System</CardTitle>
-            <CardDescription>Hospital Management System</CardDescription>
+            <CardTitle className="text-2xl tracking-tight">Hospital Management System</CardTitle>
+            <CardDescription>
+              {registeringHospital
+                ? "Set up your hospital workspace"
+                : registeringAccount
+                  ? "Create a secure HMS staff account"
+                  : "Secure care coordination for your hospital team"}
+            </CardDescription>
           </CardHeader>
-          <CardContent>
+          <CardContent className="px-8 pb-8">
             <form
-              onSubmit={registeringHospital ? handleRegisterTenant : handleLogin}
+              onSubmit={
+                registeringHospital
+                  ? handleRegisterTenant
+                  : registeringAccount
+                    ? handleRegisterAccount
+                    : handleLogin
+              }
               className="space-y-5"
             >
               {registeringHospital && (
@@ -918,11 +1600,24 @@ function App() {
                   type="password"
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
-                  minLength={registeringHospital ? 8 : undefined}
+                  minLength={registeringHospital || registeringAccount ? 8 : undefined}
                   maxLength={128}
                   required
                 />
               </div>
+              {registeringHospital && (
+                <p className="text-sm text-muted-foreground">
+                  This creates a hospital and connects your account as its
+                  administrator. You will be signed in after registration.
+                </p>
+              )}
+              {registeringAccount && (
+                <p className="text-sm text-muted-foreground">
+                  Staff registration creates an account only. A hospital
+                  administrator must add it to their hospital before it can
+                  access hospital data.
+                </p>
+              )}
               {message && (
                 <p className="text-sm text-destructive" role="alert">
                   {message}
@@ -941,10 +1636,14 @@ function App() {
                 {loginLoading
                   ? registeringHospital
                     ? "Registering..."
-                    : "Signing in..."
+                    : registeringAccount
+                      ? "Creating account..."
+                      : "Signing in..."
                   : registeringHospital
                     ? "Register hospital"
-                    : "Sign in"}
+                    : registeringAccount
+                      ? "Create account"
+                      : "Sign in"}
               </Button>
               <Button
                 type="button"
@@ -952,6 +1651,7 @@ function App() {
                 className="w-full"
                 onClick={() => {
                   setRegisteringHospital((current) => !current);
+                  setRegisteringAccount(false);
                   setMessage("");
                 }}
               >
@@ -959,6 +1659,22 @@ function App() {
                   ? "Already registered? Sign in"
                   : "Register a hospital"}
               </Button>
+              {!registeringHospital && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="w-full"
+                  onClick={() => {
+                    setRegisteringAccount((current) => !current);
+                    setMessage("");
+                    setRegistrationSuccess("");
+                  }}
+                >
+                  {registeringAccount
+                    ? "Already have an account? Sign in"
+                    : "Register a staff account"}
+                </Button>
+              )}
             </form>
           </CardContent>
         </Card>
@@ -966,11 +1682,27 @@ function App() {
     );
   }
 
+  const activeRole = tenants.find((tenant) => tenant.tenantId === tenantId)?.role
+    .trim()
+    .toLowerCase();
+  const canManagePatients =
+    activeRole === "admin" || activeRole === "receptionist";
+  const canManageAppointments =
+    activeRole === "admin" ||
+    activeRole === "doctor" ||
+    activeRole === "receptionist";
+  const canManageClinicalRecords =
+    activeRole === "admin" || activeRole === "doctor";
   const navigation: { name: Page; icon: typeof LayoutDashboard }[] = [
     { name: "Dashboard", icon: LayoutDashboard },
     { name: "Patients", icon: Users },
     { name: "Appointments", icon: CalendarDays },
-    { name: "Settings", icon: Settings },
+    ...(canManageClinicalRecords
+      ? [{ name: "Clinical Records" as const, icon: FileText }]
+      : []),
+    ...(activeRole === "admin"
+      ? [{ name: "Settings" as const, icon: Settings }]
+      : []),
   ];
 
   return (
@@ -984,7 +1716,12 @@ function App() {
           <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground">
             <Activity size={24} />
           </div>
-          {sidebarOpen && <span className="font-semibold">City Hospital</span>}
+          {sidebarOpen && (
+            <span className="font-semibold">
+              {tenants.find((tenant) => tenant.tenantId === tenantId)?.name ??
+                "Hospital"}
+            </span>
+          )}
         </div>
         <Separator className="my-3" />
         {sidebarOpen && (
@@ -1031,7 +1768,7 @@ function App() {
       </aside>
 
       <main className="min-w-0 flex-1">
-        <header className="flex h-16 items-center justify-between border-b bg-card px-4 sm:px-6">
+        <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b bg-card/95 px-4 backdrop-blur sm:px-6">
           <Tooltip>
             <TooltipTrigger
               render={
@@ -1091,12 +1828,22 @@ function App() {
                 <DropdownMenuItem onClick={() => void handleLogout()} className="text-destructive focus:text-destructive">
                   <LogOut size={16} /> Sign out
                 </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => {
+                    if (window.confirm("Sign out this account from all devices?")) {
+                      void handleLogout(true);
+                    }
+                  }}
+                  className="text-destructive focus:text-destructive"
+                >
+                  <LogOut size={16} /> Sign out all devices
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
         </header>
 
-        <section className="space-y-6 p-4 sm:p-6">
+        <section className="mx-auto w-full max-w-[1600px] space-y-6 p-4 sm:p-6 lg:p-8">
           {tenantNotice && (
             <p className="text-sm text-destructive" role="alert">{tenantNotice}</p>
           )}
@@ -1112,17 +1859,19 @@ function App() {
           )}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-sm text-muted-foreground">
+              <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">
                 {tenants.find((tenant) => tenant.tenantId === tenantId)?.name ?? "Hospital"} / Workspace
               </p>
-              <h1 className="text-3xl font-bold tracking-tight">{page}</h1>
+              <h1 className="mt-1 text-3xl font-semibold tracking-tight">{page}</h1>
               <p className="mt-1 text-sm text-muted-foreground">
                 {page === "Dashboard"
                   ? "Here's an overview of your hospital."
-                  : `Manage your hospital ${page.toLowerCase()}.`}
+                  : page === "Clinical Records"
+                    ? "Review and manage patient clinical information."
+                    : `Manage your hospital ${page.toLowerCase()}.`}
               </p>
             </div>
-            <Badge variant="outline">
+            <Badge variant="secondary" className="hidden px-3 py-1 capitalize sm:inline-flex">
               {tenants.find((tenant) => tenant.tenantId === tenantId)?.role ?? "Member"}
             </Badge>
           </div>
@@ -1235,9 +1984,29 @@ function App() {
                     <CalendarDays size={18} />
                     View Appointments
                   </Button>
+                  {canManageClinicalRecords && (
+                    <Button
+                      variant="outline"
+                      onClick={() => setPage("Clinical Records")}
+                    >
+                      <FileText size={18} />
+                      Clinical Records
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             </div>
+          ) : page === "Clinical Records" && canManageClinicalRecords ? (
+            <ClinicalRecordsPage
+              key={tenantId}
+              tenantId={tenantId}
+              patients={appointmentPatients}
+              patientsLoading={appointmentPatientsLoading}
+              patientsError={appointmentPatientsError}
+              onRetryPatients={() =>
+                setAppointmentPatientsRetry((current) => current + 1)
+              }
+            />
           ) : page === "Patients" ? (
             <Card>
               <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -1248,19 +2017,41 @@ function App() {
                     registered
                   </CardDescription>
                 </div>
-                <Input
-                  className="w-full sm:max-w-xs"
-                  type="search"
-                  placeholder="Search name or phone..."
-                  value={patientSearch}
-                  onChange={(event) => {
-                    setPatientSearch(event.target.value);
-                    setPatientPage(1);
-                  }}
-                  aria-label="Search patients"
-                />
+                <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
+                  <Input
+                    className="w-full sm:max-w-xs"
+                    type="search"
+                    placeholder="Search name or phone..."
+                    value={patientSearch}
+                    onChange={(event) => {
+                      setPatientSearch(event.target.value);
+                      setPatientPage(1);
+                    }}
+                    aria-label="Search patients"
+                  />
+                  {canManagePatients && tenantId && (
+                    <CreatePatientDialog
+                      tenantId={tenantId}
+                      onCreated={(patient) => {
+                        setPatients((current) => [patient, ...current]);
+                        setPatientTotal((current) => current + 1);
+                        setPatientSearch("");
+                        setPatientPage(1);
+                        setPatientRetry((current) => current + 1);
+                        setPatientCreateNotice(
+                          `Patient ${patient.firstName} ${patient.lastName} created.`,
+                        );
+                      }}
+                    />
+                  )}
+                </div>
               </CardHeader>
               <CardContent>
+                {patientCreateNotice && (
+                  <p className="mb-4 text-sm text-green-700" role="status">
+                    {patientCreateNotice}
+                  </p>
+                )}
                 {patientLoading ? (
                   <div className="space-y-3 py-3" aria-label="Loading patients">
                     {Array.from({ length: 5 }).map((_, index) => (
@@ -1300,6 +2091,7 @@ function App() {
                           <TableHead>Email</TableHead>
                           <TableHead>Date of Birth</TableHead>
                           <TableHead>Status</TableHead>
+                          <TableHead><span className="sr-only">Actions</span></TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -1319,11 +2111,32 @@ function App() {
                             <TableCell>
                               <StatusBadge status={patient.status} />
                             </TableCell>
+                            <TableCell className="text-right">
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setSelectedPatient(patient)}
+                                aria-label={`View ${patient.firstName} ${patient.lastName} details`}
+                              >
+                                View details
+                              </Button>
+                            </TableCell>
                           </TableRow>
                         ))}
                       </TableBody>
                     </Table>
                   </div>
+                )}
+                {selectedPatient && (
+                  <PatientDetailsSheet
+                    key={selectedPatient.id}
+                    patient={selectedPatient}
+                    tenantId={tenantId}
+                    onOpenChange={(open) => {
+                      if (!open) setSelectedPatient(null);
+                    }}
+                  />
                 )}
 
                 <Separator className="my-4" />
@@ -1360,7 +2173,7 @@ function App() {
                     <div>
                       <CardTitle>Appointment synchronization</CardTitle>
                       <CardDescription>
-                        Offline appointments remain unconfirmed until the server accepts them.
+                        Pending appointments are not booked until the server accepts them.
                       </CardDescription>
                     </div>
                     <Button
@@ -1372,6 +2185,7 @@ function App() {
                         offlineOperations.every(
                           (operation) =>
                             operation.state === "synced" ||
+                            operation.userId !== userId ||
                             !operation.retryable,
                         )
                       }
@@ -1389,6 +2203,17 @@ function App() {
                           <p className="text-sm font-medium">
                             Appointment for patient {operation.patientId.slice(0, 8)}
                           </p>
+                          {operation.userId && operation.userId !== userId && (
+                            <p className="text-xs text-amber-700">
+                              Saved under another account. Sign in as that account
+                              to synchronize this appointment.
+                            </p>
+                          )}
+                          {operation.serverAppointmentId && (
+                            <p className="text-xs text-muted-foreground">
+                              Server appointment ID: {operation.serverAppointmentId}
+                            </p>
+                          )}
                           <p className="text-xs text-muted-foreground">
                             {new Date(operation.scheduledAtUtc).toLocaleString()}
                           </p>
@@ -1400,17 +2225,184 @@ function App() {
                         </div>
                         <Badge
                           variant={
-                            operation.state === "failed"
+                            operation.userId && operation.userId !== userId
+                              ? "outline"
+                              : operation.state === "failed"
                               ? "destructive"
                               : operation.state === "synced"
                                 ? "default"
                                 : "secondary"
                           }
                         >
-                          {operation.state}
+                          {operation.userId && operation.userId !== userId
+                            ? "Other account"
+                            : operation.state === "pending"
+                            ? "Pending sync"
+                            : operation.state === "syncing"
+                              ? "Syncing"
+                              : operation.state === "synced"
+                                ? "Confirmed by server"
+                                : operation.retryable
+                                  ? "Pending sync · Retry scheduled"
+                                  : "Booking failed · Needs review"}
                         </Badge>
+                        {operation.state === "synced" &&
+                          operation.syncedAtUtc && (
+                            <span className="text-xs text-muted-foreground">
+                              Confirmed by server{" "}
+                              {new Date(operation.syncedAtUtc).toLocaleString()}
+                            </span>
+                          )}
+                        {operation.state === "failed" &&
+                          !operation.retryable &&
+                          (!operation.userId || operation.userId === userId) && (
+                            <>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                setReschedulingOfflineOperationId(
+                                  operation.operationId,
+                                );
+                                setNewPatientId(operation.patientId);
+                                setNewDoctorId(operation.doctorId ?? "");
+                                setNewAppointmentDate(
+                                  operation.scheduledAtUtc.slice(0, 10),
+                                );
+                                setNewScheduledAt("");
+                                setNewAppointmentReason(operation.reason ?? "");
+                                setAppointmentDialogOpen(true);
+                              }}
+                            >
+                              Choose another slot
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              onClick={() => {
+                                if (
+                                  !window.confirm(
+                                    "Discard this unsynchronized appointment? This cannot be undone.",
+                                  )
+                                ) return;
+                                void removeAppointment(operation.operationId)
+                                  .then(() =>
+                                    getOfflineAppointments(tenantId).then(
+                                      setOfflineOperations,
+                                    ),
+                                  )
+                                  .catch((error: unknown) =>
+                                    setCreateAppointmentMessage(
+                                      error instanceof Error
+                                        ? error.message
+                                        : "Unable to discard the failed appointment.",
+                                    ),
+                                  );
+                              }}
+                            >
+                              Discard
+                            </Button>
+                            </>
+                          )}
                       </div>
                     ))}
+                  </CardContent>
+                </Card>
+              )}
+              {canConfigureAvailability && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Doctor availability</CardTitle>
+                    <CardDescription>
+                      Configure a UTC availability window for today or a future date.
+                      Slots are 30 minutes; no working hours are assumed by default.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <form
+                      className="grid gap-4 sm:grid-cols-2"
+                      onSubmit={handleSetAvailability}
+                    >
+                      <div className="space-y-2">
+                        <Label htmlFor="availability-doctor">Doctor</Label>
+                        <Select
+                          value={availabilityDoctorId}
+                          onValueChange={(value) =>
+                            setAvailabilityDoctorId(value ?? "")
+                          }
+                        >
+                          <SelectTrigger id="availability-doctor" className="w-full">
+                            <SelectValue placeholder="Select a doctor" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {appointmentDoctors.map((doctor) => (
+                              <SelectItem key={doctor.id} value={doctor.id}>
+                                {doctor.email}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="availability-date">Date (UTC)</Label>
+                        <Input
+                          id="availability-date"
+                          type="date"
+                          min={getUtcDateInputValue()}
+                          value={availabilityDate}
+                          onChange={(event) =>
+                            setAvailabilityDate(event.target.value)
+                          }
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="availability-start">Start time (UTC)</Label>
+                        <Input
+                          id="availability-start"
+                          type="time"
+                          step={1800}
+                          value={availabilityStartTimeUtc}
+                          onChange={(event) =>
+                            setAvailabilityStartTimeUtc(event.target.value)
+                          }
+                          required
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="availability-end">End time (UTC)</Label>
+                        <Input
+                          id="availability-end"
+                          type="time"
+                          step={1800}
+                          value={availabilityEndTimeUtc}
+                          onChange={(event) =>
+                            setAvailabilityEndTimeUtc(event.target.value)
+                          }
+                          required
+                        />
+                      </div>
+                      {availabilityMessage && (
+                        <p className="text-sm text-muted-foreground sm:col-span-2" role="status">
+                          {availabilityMessage}
+                        </p>
+                      )}
+                      <div className="sm:col-span-2">
+                        <Button
+                          type="submit"
+                          disabled={
+                            savingAvailability ||
+                            !isOnline ||
+                            !availabilityDoctorId ||
+                            doctorsLoading
+                          }
+                        >
+                          {savingAvailability ? "Saving..." : "Save availability"}
+                        </Button>
+                      </div>
+                    </form>
                   </CardContent>
                 </Card>
               )}
@@ -1480,17 +2472,30 @@ function App() {
                       <Table>
                         <TableHeader>
                           <TableRow>
-                            <TableHead>Patient ID</TableHead>
+                            <TableHead>Patient</TableHead>
+                            <TableHead>Doctor</TableHead>
                             <TableHead>Date &amp; Time</TableHead>
                             <TableHead>Reason</TableHead>
                             <TableHead>Status</TableHead>
+                            <TableHead>Actions</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
                           {appointments.map((appointment) => (
                             <TableRow key={appointment.id}>
                               <TableCell title={appointment.patientId}>
-                                {appointment.patientId.slice(0, 8)}...
+                                <span className="font-medium">
+                                  {getAppointmentPatientLabel(
+                                    appointment.patientId,
+                                    appointmentPatients,
+                                  )}
+                                </span>
+                              </TableCell>
+                              <TableCell>
+                                {appointmentDoctors.find(
+                                  (doctor) =>
+                                    doctor.id === appointment.doctorId,
+                                )?.email ?? "Unassigned"}
                               </TableCell>
                               <TableCell>
                                 {new Date(
@@ -1500,6 +2505,51 @@ function App() {
                               <TableCell>{appointment.reason}</TableCell>
                               <TableCell>
                                 <StatusBadge status={appointment.status} />
+                              </TableCell>
+                              <TableCell>
+                                {appointment.status.toLowerCase() === "scheduled" &&
+                                  canManageAppointments && (
+                                    <div className="flex flex-wrap gap-2">
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() => {
+                                          setReschedulingAppointment(appointment);
+                                          setEditingAppointmentPatientId(appointment.patientId);
+                                          setEditingAppointmentReason(appointment.reason);
+                                          setNewDoctorId(appointment.doctorId ?? "");
+                                          setNewAppointmentDate(
+                                            appointment.scheduledAtUtc.slice(0, 10),
+                                          );
+                                          setAvailableSlots([]);
+                                          setRescheduledAt("");
+                                        }}
+                                      >
+                                        <CalendarClock size={16} />
+                                        Edit
+                                      </Button>
+                                      <Button
+                                        variant="outline"
+                                        size="sm"
+                                        onClick={() =>
+                                          void updateAppointmentStatus(appointment, "completed")
+                                        }
+                                      >
+                                        Complete
+                                      </Button>
+                                      <Button
+                                        variant="destructive"
+                                        size="sm"
+                                        onClick={() => {
+                                          if (window.confirm("Cancel this appointment?")) {
+                                            void updateAppointmentStatus(appointment, "cancelled");
+                                          }
+                                        }}
+                                      >
+                                        Cancel
+                                      </Button>
+                                    </div>
+                                  )}
                               </TableCell>
                             </TableRow>
                           ))}
@@ -1548,15 +2598,17 @@ function App() {
                   <p className="text-sm text-muted-foreground" role="status">{createAppointmentMessage}</p>
                 )}
               <Dialog open={appointmentDialogOpen} onOpenChange={setAppointmentDialogOpen}>
-                <div className="flex justify-end">
+                {canManageAppointments && <div className="flex justify-end">
                   <DialogTrigger
                     render={
-                      <Button>
+                      <Button
+                        onClick={() => setReschedulingOfflineOperationId(null)}
+                      >
                         <CalendarDays size={18} /> Schedule appointment
                       </Button>
                     }
                   />
-                </div>
+                </div>}
                 <DialogContent className="sm:max-w-lg">
                   <DialogHeader>
                     <DialogTitle>Schedule an Appointment</DialogTitle>
@@ -1568,6 +2620,43 @@ function App() {
                     className="grid gap-4"
                     onSubmit={handleCreateAppointment}
                   >
+                    <div className="space-y-2">
+                      <Label htmlFor="appointment-doctor">Doctor</Label>
+                      <Select
+                        value={newDoctorId}
+                        onValueChange={(value) => {
+                          setNewDoctorId(value ?? "");
+                          setNewScheduledAt("");
+                          setAvailableSlots([]);
+                        }}
+                      >
+                        <SelectTrigger id="appointment-doctor" className="w-full">
+                          <SelectValue placeholder="Select a doctor" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {appointmentDoctors.map((doctor) => (
+                            <SelectItem key={doctor.id} value={doctor.id}>
+                              {doctor.email}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {doctorsLoading && (
+                        <p className="text-xs text-muted-foreground">
+                          Loading doctors...
+                        </p>
+                      )}
+                      {!isOnline && appointmentDoctors.length === 0 && (
+                        <p className="text-xs text-muted-foreground">
+                          Doctor choices are unavailable offline.
+                        </p>
+                      )}
+                      {doctorError && (
+                        <p className="text-xs text-destructive" role="alert">
+                          {doctorError}
+                        </p>
+                      )}
+                    </div>
                     <div className="space-y-2">
                       <Label htmlFor="appointment-patient">Patient</Label>
                       <Select
@@ -1587,14 +2676,61 @@ function App() {
                       </Select>
                     </div>
                     <div className="space-y-2">
-                      <Label htmlFor="appointment-date">Date and time</Label>
-                          <Input
-                            id="appointment-date"
-                            type="datetime-local"
-                            value={newScheduledAt}
-                            onChange={(event) => setNewScheduledAt(event.target.value)}
-                            required
+                      <Label htmlFor="appointment-date">Appointment date (UTC)</Label>
+                      <Input
+                        id="appointment-date"
+                        type="date"
+                        value={newAppointmentDate}
+                        onChange={(event) => {
+                          setNewAppointmentDate(event.target.value);
+                          setNewScheduledAt("");
+                          setAvailableSlots([]);
+                        }}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="appointment-slot">Available time (UTC)</Label>
+                      <Select
+                        value={newScheduledAt}
+                        onValueChange={(value) =>
+                          setNewScheduledAt(value ?? "")
+                        }
+                        disabled={
+                          !newDoctorId ||
+                          slotsLoading ||
+                          availableSlots.length === 0
+                        }
+                      >
+                        <SelectTrigger id="appointment-slot" className="w-full">
+                          <SelectValue
+                            placeholder={
+                              slotsLoading
+                                ? "Loading available slots..."
+                                : "Select an available time"
+                            }
                           />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableSlots.map((slot) => (
+                            <SelectItem key={slot} value={slot}>
+                              {new Date(slot).toISOString().slice(11, 16)} UTC
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {slotsError && (
+                        <p className="text-xs text-muted-foreground" role="status">
+                          {slotsError}
+                        </p>
+                      )}
+                      {!isOnline && (
+                        <p className="text-xs text-amber-700">
+                          {availableSlots.length
+                            ? "Showing previously loaded slots. The server must revalidate your choice; offline bookings remain pending."
+                            : "Load available slots while online before queuing an appointment offline."}
+                        </p>
+                      )}
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="appointment-reason">Reason</Label>
@@ -1614,8 +2750,136 @@ function App() {
                       <Button type="button" variant="outline" onClick={() => setAppointmentDialogOpen(false)}>
                         Cancel
                       </Button>
-                      <Button type="submit" disabled={creatingAppointment || !newPatientId}>
+                      <Button
+                        type="submit"
+                        disabled={
+                          creatingAppointment ||
+                          !newPatientId ||
+                          !newDoctorId ||
+                          !newScheduledAt
+                        }
+                      >
                         {creatingAppointment ? "Saving..." : "Create Appointment"}
+                      </Button>
+                    </div>
+                  </form>
+                </DialogContent>
+              </Dialog>
+              <Dialog
+                open={reschedulingAppointment !== null}
+                onOpenChange={(open) => {
+                  if (!open && !rescheduling) {
+                    setReschedulingAppointment(null);
+                  }
+                }}
+              >
+                <DialogContent className="sm:max-w-lg">
+                  <DialogHeader>
+                    <DialogTitle>Edit appointment</DialogTitle>
+                    <DialogDescription>
+                      The appointment version is checked when saving so concurrent changes are not overwritten.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <form
+                    className="grid gap-4"
+                    onSubmit={handleRescheduleAppointment}
+                  >
+                    <div className="space-y-2">
+                      <Label htmlFor="rescheduled-date">Date (UTC)</Label>
+                      <Input
+                        id="rescheduled-date"
+                        type="date"
+                        value={newAppointmentDate}
+                        onChange={(event) => {
+                          setNewAppointmentDate(event.target.value);
+                          setRescheduledAt("");
+                          setAvailableSlots([]);
+                        }}
+                        required
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="rescheduled-slot">Available time (UTC)</Label>
+                      <Select
+                        value={rescheduledAt}
+                        onValueChange={(value) =>
+                          setRescheduledAt(value ?? "")
+                        }
+                        disabled={slotsLoading || availableSlots.length === 0}
+                      >
+                        <SelectTrigger id="rescheduled-slot" className="w-full">
+                          <SelectValue placeholder="Select an available time" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableSlots.map((slot) => (
+                            <SelectItem key={slot} value={slot}>
+                              {new Date(slot).toISOString().slice(11, 16)} UTC
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {slotsLoading && (
+                        <p className="text-xs text-muted-foreground">
+                          Loading available slots...
+                        </p>
+                      )}
+                      {slotsError && (
+                        <p className="text-xs text-muted-foreground" role="status">
+                          {slotsError}
+                        </p>
+                      )}
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-appointment-patient">Patient</Label>
+                      <Select
+                        value={editingAppointmentPatientId}
+                        onValueChange={(value) =>
+                          setEditingAppointmentPatientId(value ?? "")
+                        }
+                      >
+                        <SelectTrigger id="edit-appointment-patient" className="w-full">
+                          <SelectValue placeholder="Select a patient" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {appointmentPatients.map((patient) => (
+                            <SelectItem key={patient.id} value={patient.id}>
+                              {patient.firstName} {patient.lastName}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="edit-appointment-reason">Reason</Label>
+                      <Textarea
+                        id="edit-appointment-reason"
+                        value={editingAppointmentReason}
+                        onChange={(event) =>
+                          setEditingAppointmentReason(event.target.value)
+                        }
+                        maxLength={500}
+                        required
+                      />
+                    </div>
+                    {createAppointmentMessage && (
+                      <p className="text-sm" role="status">
+                        {createAppointmentMessage}
+                      </p>
+                    )}
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setReschedulingAppointment(null)}
+                        disabled={rescheduling}
+                      >
+                        Cancel
+                      </Button>
+                      <Button
+                        type="submit"
+                        disabled={rescheduling || !rescheduledAt}
+                      >
+                        {rescheduling ? "Saving..." : "Save appointment"}
                       </Button>
                     </div>
                   </form>
@@ -1623,12 +2887,14 @@ function App() {
               </Dialog>
               </div>
             </div>
+          ) : page === "Settings" && activeRole === "admin" ? (
+            <HospitalStaffSettings key={tenantId} tenantId={tenantId} />
           ) : (
             <Card>
               <CardHeader>
                 <CardTitle>Settings</CardTitle>
                 <CardDescription>
-                  Hospital settings will be added later.
+                  Administrative settings are available to hospital administrators.
                 </CardDescription>
               </CardHeader>
             </Card>

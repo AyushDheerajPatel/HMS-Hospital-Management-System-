@@ -31,6 +31,9 @@ namespace Hms.Infrastructure.Persistence.Migrations
                     b.Property<DateTime>("CreatedAtUtc")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<Guid?>("DoctorId")
+                        .HasColumnType("uuid");
+
                     b.Property<Guid>("PatientId")
                         .HasColumnType("uuid");
 
@@ -50,7 +53,15 @@ namespace Hms.Infrastructure.Persistence.Migrations
                     b.Property<Guid>("TenantId")
                         .HasColumnType("uuid");
 
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(1);
+
                     b.HasKey("Id");
+
+                    b.HasIndex("DoctorId");
 
                     b.HasIndex("TenantId");
 
@@ -58,7 +69,69 @@ namespace Hms.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("TenantId", "ScheduledAtUtc");
 
+                    b.HasIndex("TenantId", "DoctorId", "ScheduledAtUtc");
+
                     b.ToTable("appointments", (string)null);
+                });
+
+            modelBuilder.Entity("Hms.Domain.Appointments.AppointmentOperation", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("ClientOperationId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("AppointmentId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid?>("DoctorId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("PatientId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("character varying(500)");
+
+                    b.Property<DateTime>("ScheduledAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("TenantId", "ClientOperationId");
+
+                    b.HasIndex("AppointmentId")
+                        .IsUnique();
+
+                    b.ToTable("appointment_operations", (string)null);
+                });
+
+            modelBuilder.Entity("Hms.Domain.Appointments.DoctorAvailability", b =>
+                {
+                    b.Property<Guid>("TenantId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid>("DoctorId")
+                        .HasColumnType("uuid");
+
+                    b.Property<DateOnly>("Date")
+                        .HasColumnType("date");
+
+                    b.Property<TimeOnly>("EndTimeUtc")
+                        .HasColumnType("time without time zone");
+
+                    b.Property<TimeOnly>("StartTimeUtc")
+                        .HasColumnType("time without time zone");
+
+                    b.HasKey("TenantId", "DoctorId", "Date");
+
+                    b.HasIndex("DoctorId");
+
+                    b.ToTable("doctor_availabilities", (string)null);
                 });
 
             modelBuilder.Entity("Hms.Domain.Patients.Patient", b =>
@@ -167,6 +240,9 @@ namespace Hms.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("ActiveSessionId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Email")
                         .IsRequired()
                         .HasMaxLength(320)
@@ -182,6 +258,38 @@ namespace Hms.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("users", (string)null);
+                });
+
+            modelBuilder.Entity("Hms.Domain.Appointments.Appointment", b =>
+                {
+                    b.HasOne("Hms.Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("DoctorId")
+                        .OnDelete(DeleteBehavior.Restrict);
+                });
+
+            modelBuilder.Entity("Hms.Domain.Appointments.AppointmentOperation", b =>
+                {
+                    b.HasOne("Hms.Domain.Appointments.Appointment", null)
+                        .WithMany()
+                        .HasForeignKey("AppointmentId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("Hms.Domain.Appointments.DoctorAvailability", b =>
+                {
+                    b.HasOne("Hms.Domain.Users.User", null)
+                        .WithMany()
+                        .HasForeignKey("DoctorId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("Hms.Domain.Tenants.Tenant", null)
+                        .WithMany()
+                        .HasForeignKey("TenantId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Hms.Domain.TenantMemberships.TenantMembership", b =>

@@ -25,6 +25,12 @@ public sealed class HmsDbContext : DbContext
     public DbSet<Appointment> Appointments =>
     Set<Appointment>();
 
+    public DbSet<AppointmentOperation> AppointmentOperations =>
+        Set<AppointmentOperation>();
+
+    public DbSet<DoctorAvailability> DoctorAvailabilities =>
+        Set<DoctorAvailability>();
+
     protected override void OnModelCreating(
         ModelBuilder modelBuilder)
     {
